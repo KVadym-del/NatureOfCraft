@@ -1,39 +1,17 @@
-#include "Include/expected.hpp"
-
-#include <GLFW/glfw3.h>
-
-#include <cstdint>
-#include <fmt/base.h>
+#include "Include/Window.hpp"
 
 constexpr static std::uint32_t WIDTH{800};
 constexpr static std::uint32_t HEIGHT{600};
 
 int main()
 {
-    if (!glfwInit())
-    {
-        fmt::println("ERROR: Failed to initialize GLFW.");
-        return 1;
-    }
+    Window window{WIDTH, HEIGHT, "NatureOfCraft"};
 
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+    if (auto code = get_error_code(window.init()); code != 0)
+        return code;
 
-    GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan window", nullptr, nullptr);
-    if (!window)
-    {
-        fmt::println("ERROR: Failed to create GLFW window");
-        glfwTerminate();
-        return 1;
-    }
-
-    while (!glfwWindowShouldClose(window))
-    {
-        glfwPollEvents();
-    }
-
-    glfwDestroyWindow(window);
-    glfwTerminate();
+    if (auto code = get_error_code(window.loop()); code != 0)
+        return code;
 
     return 0;
 }
