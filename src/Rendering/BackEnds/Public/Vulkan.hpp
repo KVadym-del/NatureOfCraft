@@ -59,6 +59,12 @@ class Vulkan
             return result;
         if (auto result = this->create_image_views(); !result)
             return result;
+        if (auto result = this->create_render_pass(); !result)
+            return result;
+        if (auto result = this->create_graphics_pipeline(); !result)
+            return result;
+        if (auto result = this->create_framebuffers(); !result)
+            return result;
 
         return {};
     }
@@ -97,6 +103,12 @@ class Vulkan
     Result<> create_image_views();
 
     Result<> create_graphics_pipeline();
+
+    Result<VkShaderModule> create_shader_module(const std::vector<char>& code) noexcept;
+
+    Result<> create_render_pass();
+
+    Result<> create_framebuffers();
 
     bool check_validation_layer_support() const noexcept;
 
@@ -146,4 +158,11 @@ class Vulkan
     VkExtent2D m_swapChainExtent{};
 
     std::vector<VkImageView> m_swapChainImageViews{};
+
+    VkRenderPass m_renderPass{};
+    VkPipelineLayout m_pipelineLayout{};
+
+    VkPipeline m_graphicsPipeline{};
+
+    std::vector<VkFramebuffer> m_swapChainFramebuffers{};
 };

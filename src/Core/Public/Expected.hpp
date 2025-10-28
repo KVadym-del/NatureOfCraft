@@ -15,8 +15,11 @@ enum class ErrorCode
     GLFWInitializationFailed = 1,
     GLFWFailedToCreateWindow,
 
+    // Utils Errors
+    FileReadFailed = 100,
+
     // Vulkan Errors
-    VulkanInstanceCreationFailed = 100,
+    VulkanInstanceCreationFailed = 200,
     VulkanValidationLayersNotSupported,
     VulkanDebugMessengerCreationFailed,
     VulkanPhysicalDeviceSelectionFailed,
@@ -24,6 +27,11 @@ enum class ErrorCode
     VulkanSurfaceCreationFailed,
     VulkanSwapChainCreationFailed,
     VulkanImageViewCreationFailed,
+    VulkanShaderModuleCreationFailed,
+    VulkanGraphicsPipelineLayoutCreationFailed,
+    VulkanRenderPassCreationFailed,
+    VulkanGraphicsPipelineCreationFailed,
+    VulkanFramebufferCreationFailed,
 };
 
 struct Error
