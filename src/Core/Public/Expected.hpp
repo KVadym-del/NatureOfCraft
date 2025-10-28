@@ -22,6 +22,8 @@ enum class ErrorCode
     VulkanPhysicalDeviceSelectionFailed,
     VulkanLogicalDeviceCreationFailed,
     VulkanSurfaceCreationFailed,
+    VulkanSwapChainCreationFailed,
+    VulkanImageViewCreationFailed,
 };
 
 struct Error

@@ -25,6 +25,18 @@ const char** src_files = (const char*[]){
     NULL,
 };
 
+typedef struct
+{
+    const char* src;
+    const char* out;
+} ShaderPair;
+
+const ShaderPair shader_files[] = {
+    {"src/Resources/shader.vert", "src/Resources/vert.spv"},
+    {"src/Resources/shader.frag", "src/Resources/frag.spv"},
+    {NULL, NULL},
+};
+
 bool build_and_run(Cmd* cmd, bool debug)
 {
     size_t mark = temp_save();
@@ -100,6 +112,22 @@ bool build_and_run(Cmd* cmd, bool debug)
     nob_cmd_append(cmd, "-o", bin_path);
     if (!cmd_run(cmd))
         return false;
+
+    // Compile shaders
+    nob_log(INFO, "--- Compiling shaders ---");
+    for (size_t i = 0; shader_files[i].src != NULL; i++)
+    {
+        const char* shader_src = shader_files[i].src;
+        const char* shader_out = shader_files[i].out;
+
+        cmd->count = 0;
+        nob_cmd_append(cmd, "glslc");
+        nob_cmd_append(cmd, shader_src);
+        nob_cmd_append(cmd, "-o", shader_out);
+
+        if (!cmd_run(cmd))
+            return false;
+    }
 
     nob_log(INFO, "--- %s finished ---", bin_path);
 

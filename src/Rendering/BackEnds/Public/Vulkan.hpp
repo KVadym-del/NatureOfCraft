@@ -25,8 +25,14 @@ struct QueueFamilyIndices
     inline bool is_complete() const noexcept
     {
         return graphicsFamily.has_value() && presentFamily.has_value();
-        ;
     }
+};
+
+struct SwapChainSupportDetails
+{
+    VkSurfaceCapabilitiesKHR capabilities{};
+    std::vector<VkSurfaceFormatKHR> formats{};
+    std::vector<VkPresentModeKHR> presentModes{};
 };
 
 class Vulkan
@@ -49,6 +55,10 @@ class Vulkan
             return result;
         if (auto result = this->create_logical_device(); !result)
             return result;
+        if (auto result = this->create_swap_chain(); !result)
+            return result;
+        if (auto result = this->create_image_views(); !result)
+            return result;
 
         return {};
     }
@@ -66,11 +76,27 @@ class Vulkan
 
     bool is_device_suitable(VkPhysicalDevice device) noexcept;
 
+    bool check_device_extension_support(VkPhysicalDevice device) noexcept;
+
     Result<> create_logical_device();
 
     QueueFamilyIndices find_queue_families(VkPhysicalDevice device) noexcept;
 
     Result<> create_surface(GLFWwindow* window) noexcept;
+
+    SwapChainSupportDetails query_swap_chain_support(VkPhysicalDevice device) noexcept;
+
+    VkSurfaceFormatKHR choose_swap_surface_format(const std::vector<VkSurfaceFormatKHR>& availableFormats) noexcept;
+
+    VkPresentModeKHR choose_swap_present_mode(const std::vector<VkPresentModeKHR>& availablePresentModes) noexcept;
+
+    VkExtent2D choose_swap_extent(const VkSurfaceCapabilitiesKHR& capabilities) noexcept;
+
+    Result<> create_swap_chain();
+
+    Result<> create_image_views();
+
+    Result<> create_graphics_pipeline();
 
     bool check_validation_layer_support() const noexcept;
 
@@ -91,7 +117,13 @@ class Vulkan
   private:
     VkInstance m_instance{};
 
-    static constexpr std::array<const char*, 1> m_validationLayers{"VK_LAYER_KHRONOS_validation"};
+    static constexpr std::array<const char*, 1> m_validationLayers{
+        "VK_LAYER_KHRONOS_validation",
+    };
+    static constexpr std::array<const char*, 1> m_deviceExtensions{
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+    };
+
 #ifdef NDEBUG
     static constexpr bool m_enableValidationLayers{false};
 #else
@@ -106,4 +138,12 @@ class Vulkan
 
     GLFWwindow* m_window{};
     VkSurfaceKHR m_surface{};
+
+    VkSwapchainKHR m_swapChain{};
+    std::vector<VkImage> m_swapChainImages{};
+
+    VkFormat m_swapChainImageFormat{};
+    VkExtent2D m_swapChainExtent{};
+
+    std::vector<VkImageView> m_swapChainImageViews{};
 };
