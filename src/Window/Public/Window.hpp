@@ -27,7 +27,7 @@ class Window
     void cleanup() noexcept;
 
   public:
-    inline GLFWwindow* getGLFWwindow() const noexcept
+    inline GLFWwindow* get_glfw_window() const noexcept
     {
         return m_window;
     }

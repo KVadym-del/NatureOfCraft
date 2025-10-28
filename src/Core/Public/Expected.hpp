@@ -19,6 +19,9 @@ enum class ErrorCode
     VulkanInstanceCreationFailed = 100,
     VulkanValidationLayersNotSupported,
     VulkanDebugMessengerCreationFailed,
+    VulkanPhysicalDeviceSelectionFailed,
+    VulkanLogicalDeviceCreationFailed,
+    VulkanSurfaceCreationFailed,
 };
 
 struct Error
