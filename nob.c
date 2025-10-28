@@ -8,7 +8,6 @@
 #define BIN_FOLDER "bin/"
 #define DEBUG_FOLDER "debug/"
 #define RELEASE_FOLDER "release/"
-#define SRC_FOLDER "src/"
 
 #define DEBUG_FLAGS "-g", "-O0", "-DDEBUG", "-Wall", "-Wextra"
 #define RELEASE_FLAGS "-O3", "-DNDEBUG", "-Wall", "-Wextra"
@@ -19,7 +18,12 @@
 
 #define PROGRAM_NAME "NatureOfCraft"
 
-const char** src_files = (const char*[]){"main.cpp", "Window.cpp", NULL};
+const char** src_files = (const char*[]){
+    "src/main.cpp",
+    "src/Window/Private/Window.cpp",
+    "src/Rendering/BackEnds/Private/Vulkan.cpp",
+    NULL,
+};
 
 bool build_and_run(Cmd* cmd, bool debug)
 {
@@ -41,8 +45,12 @@ bool build_and_run(Cmd* cmd, bool debug)
 
     for (const char** src = src_files; *src != NULL; src++)
     {
-        const char* src_path = temp_sprintf("%s%s", SRC_FOLDER, *src);
-        const char* obj_name = temp_sprintf("%.*s.o", (int)(strlen(*src) - 4), *src);
+        const char* src_path = temp_sprintf("%s", *src);
+        const char* base_name = strrchr(*src, '/');
+        base_name = base_name ? base_name + 1 : *src;
+        const char* ext = strrchr(base_name, '.');
+        size_t name_len = ext ? (size_t)(ext - base_name) : strlen(base_name);
+        const char* obj_name = temp_sprintf("%.*s.o", (int)name_len, base_name);
         const char* obj_path = temp_sprintf("%s%s", build_folder, obj_name);
 
         cmd->count = 0;
@@ -78,7 +86,11 @@ bool build_and_run(Cmd* cmd, bool debug)
 
     for (const char** src = src_files; *src != NULL; src++)
     {
-        const char* obj_name = temp_sprintf("%.*s.o", (int)(strlen(*src) - 4), *src);
+        const char* base_name = strrchr(*src, '/');
+        base_name = base_name ? base_name + 1 : *src;
+        const char* ext = strrchr(base_name, '.');
+        size_t name_len = ext ? (size_t)(ext - base_name) : strlen(base_name);
+        const char* obj_name = temp_sprintf("%.*s.o", (int)name_len, base_name);
         const char* obj_path = temp_sprintf("%s%s", build_folder, obj_name);
         nob_cmd_append(cmd, obj_path);
     }

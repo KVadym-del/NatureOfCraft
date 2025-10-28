@@ -1,3 +1,4 @@
+#pragma once
 #include "Core.hpp"
 
 #include <cstdint>
@@ -13,6 +14,11 @@ enum class ErrorCode
     // GLFW Errors
     GLFWInitializationFailed = 1,
     GLFWFailedToCreateWindow,
+
+    // Vulkan Errors
+    VulkanInstanceCreationFailed = 100,
+    VulkanValidationLayersNotSupported,
+    VulkanDebugMessengerCreationFailed,
 };
 
 struct Error

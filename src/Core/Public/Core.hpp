@@ -1,3 +1,4 @@
+#pragma once
 #include <cstdint>
 
 #define STRINGIFY_DETAIL(x) #x
@@ -15,6 +16,5 @@
             return STRINGIFY(Major) "." STRINGIFY(Minor) "." STRINGIFY(Patch);                                         \
         }                                                                                                              \
     } VarName                                                                                                          \
-    {                                                                                                                  \
-    }
+    {}
 DEFINE_VERSION(NATURE_OF_CRAFT, 0, 0, 1);
