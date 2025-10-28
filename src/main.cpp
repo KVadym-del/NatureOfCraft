@@ -16,8 +16,10 @@ int main()
     if (auto code = get_error_code(vulkan.initialize()); code != 0)
         return code;
 
-    if (auto code = get_error_code(window.loop()); code != 0)
+    if (auto code = get_error_code(window.loop([&vulkan]() { return vulkan.draw_frame(); })); code != 0)
         return code;
+
+    vulkan.wait_idle();
 
     vulkan.cleanup();
 

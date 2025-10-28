@@ -5,7 +5,7 @@
 #include <GLFW/glfw3.h>
 
 #include <cstdint>
-#include <fmt/base.h>
+#include <functional>
 #include <string_view>
 
 class Window
@@ -22,7 +22,7 @@ class Window
 
     Result<> init();
 
-    Result<> loop();
+    Result<> loop(std::function<Result<>()> draw_frame);
 
     void cleanup() noexcept;
 

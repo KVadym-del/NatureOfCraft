@@ -65,9 +65,18 @@ class Vulkan
             return result;
         if (auto result = this->create_framebuffers(); !result)
             return result;
+        if (auto result = this->create_command_pool(); !result)
+            return result;
+        if (auto result = this->create_command_buffer(); !result)
+            return result;
+        if (auto result = this->create_sync_objects(); !result)
+            return result;
 
         return {};
     }
+
+    Result<> draw_frame() noexcept;
+    void wait_idle() noexcept;
 
     void cleanup() noexcept;
 
@@ -109,6 +118,14 @@ class Vulkan
     Result<> create_render_pass();
 
     Result<> create_framebuffers();
+
+    Result<> create_command_pool();
+
+    Result<> create_command_buffer();
+
+    Result<> record_command_buffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) noexcept;
+
+    Result<> create_sync_objects();
 
     bool check_validation_layer_support() const noexcept;
 
@@ -165,4 +182,11 @@ class Vulkan
     VkPipeline m_graphicsPipeline{};
 
     std::vector<VkFramebuffer> m_swapChainFramebuffers{};
+
+    VkCommandPool m_commandPool{};
+    VkCommandBuffer m_commandBuffer{};
+
+    VkSemaphore m_imageAvailableSemaphore{};
+    VkSemaphore m_renderFinishedSemaphore{};
+    VkFence m_inFlightFence{};
 };

@@ -32,6 +32,11 @@ enum class ErrorCode
     VulkanRenderPassCreationFailed,
     VulkanGraphicsPipelineCreationFailed,
     VulkanFramebufferCreationFailed,
+    VulkanCommandPoolCreationFailed,
+    VulkanCommandBufferAllocationFailed,
+    VulkanCommandBufferRecordingFailed,
+    VulkanSyncObjectsCreationFailed,
+    VulkanDrawFrameFailed,
 };
 
 struct Error

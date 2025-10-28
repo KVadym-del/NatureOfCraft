@@ -1,9 +1,7 @@
 #include "../Public/Window.hpp"
 
-#include <atomic>
 #include <iostream>
 #include <string>
-#include <thread>
 
 Result<> Window::init()
 {
@@ -25,26 +23,9 @@ Result<> Window::init()
     return {};
 }
 
-Result<> Window::loop()
+Result<> Window::loop(std::function<Result<>()> draw_frame)
 {
-    std::atomic<bool> shouldExit{false};
-
-    std::thread inputThread([&shouldExit]() {
-        std::string input{};
-        while (!shouldExit)
-        {
-            if (std::getline(std::cin, input))
-            {
-                if (input == "exit")
-                {
-                    shouldExit = true;
-                    break;
-                }
-            }
-        }
-    });
-
-    while (!glfwWindowShouldClose(this->m_window) && !shouldExit)
+    while (!glfwWindowShouldClose(this->m_window))
     {
         glfwPollEvents();
 
@@ -52,12 +33,10 @@ Result<> Window::loop()
         {
             glfwSetWindowShouldClose(this->m_window, GLFW_TRUE);
         }
-    }
 
-    shouldExit = true;
-    if (inputThread.joinable())
-    {
-        inputThread.detach();
+        auto drawResult = draw_frame();
+        if (!drawResult)
+            return drawResult;
     }
 
     return {};
