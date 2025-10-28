@@ -1,8 +1,5 @@
 #include "../Public/Window.hpp"
 
-#include <iostream>
-#include <string>
-
 Result<> Window::init()
 {
     if (!glfwInit())
