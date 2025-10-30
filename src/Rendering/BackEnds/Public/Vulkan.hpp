@@ -76,16 +76,34 @@ class Vulkan
     }
 
     Result<> draw_frame() noexcept;
+
     void wait_idle() noexcept;
 
     void cleanup() noexcept;
 
   private:
-    Result<> create_instance();
-
     Result<> setup_debug_messenger();
 
     void populate_debug_messenger_create_info(VkDebugUtilsMessengerCreateInfoEXT& createInfo) noexcept;
+
+    bool check_validation_layer_support() const noexcept;
+
+    std::vector<const char*> get_required_extensions();
+
+    static VKAPI_ATTR uint32_t VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+                                                         VkDebugUtilsMessageTypeFlagsEXT messageType,
+                                                         const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+                                                         void* pUserData);
+
+    VkResult ceate_debug_utils_messenger_ext(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
+                                             const VkAllocationCallbacks* pAllocator,
+                                             VkDebugUtilsMessengerEXT* pDebugMessenger) noexcept;
+
+    void destroy_debug_utils_messenger_ext(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger,
+                                           const VkAllocationCallbacks* pAllocator) noexcept;
+
+  public:
+    Result<> create_instance();
 
     Result<> pick_physical_device();
 
@@ -127,25 +145,7 @@ class Vulkan
 
     Result<> create_sync_objects();
 
-    bool check_validation_layer_support() const noexcept;
-
-    std::vector<const char*> get_required_extensions();
-
-    static VKAPI_ATTR uint32_t VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-                                                         VkDebugUtilsMessageTypeFlagsEXT messageType,
-                                                         const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-                                                         void* pUserData);
-
-    VkResult ceate_debug_utils_messenger_ext(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
-                                             const VkAllocationCallbacks* pAllocator,
-                                             VkDebugUtilsMessengerEXT* pDebugMessenger) noexcept;
-
-    void destroy_debug_utils_messenger_ext(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger,
-                                           const VkAllocationCallbacks* pAllocator) noexcept;
-
   private:
-    VkInstance m_instance{};
-
     static constexpr std::array<const char*, 1> m_validationLayers{
         "VK_LAYER_KHRONOS_validation",
     };
@@ -159,6 +159,8 @@ class Vulkan
     static constexpr bool m_enableValidationLayers{true};
 #endif
     VkDebugUtilsMessengerEXT m_debugMessenger{};
+
+    VkInstance m_instance{};
 
     VkPhysicalDevice m_physicalDevice{};
     VkDevice m_device{};
