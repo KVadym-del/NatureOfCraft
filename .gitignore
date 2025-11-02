@@ -8,3 +8,12 @@ compile_commands.json
 .cache/
 
 *.spv
+
+MakeFile
+
+*.make
+
+vcpkg.json
+vcpkg-configuration.json
+
+vcpkg_installed/
