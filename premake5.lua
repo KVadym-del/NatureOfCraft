@@ -39,75 +39,88 @@ includedirs {
     "src"
 }
 
--- vcpkg integration
--- Detect vcpkg root
-local vcpkg_root = os.getenv("VCPKG_ROOT")
-if not vcpkg_root then
-    if os.host() == "windows" then
-        vcpkg_root = "C:/vcpkg"
-    else
-        vcpkg_root = os.getenv("HOME") .. "/vcpkg"
-    end
-end
+-- vcpkg integration (manifest mode)
+-- vcpkg installs packages locally in vcpkg_installed/ directory when using manifest mode
+local vcpkg_installed = "vcpkg_installed"
 
--- Platform-specific vcpkg triplet
-local vcpkg_triplet = ""
+-- vcpkg include and lib directories (manifest mode uses local vcpkg_installed/)
+-- Use x64-windows-static for static linking on Windows (avoids DLL issues with MinGW)
 filter "system:windows"
-vcpkg_triplet = "x64-windows"
+local vcpkg_triplet_win = "x64-windows-static"
+includedirs {
+    path.join(vcpkg_installed, vcpkg_triplet_win, "include")
+}
+libdirs {
+    path.join(vcpkg_installed, vcpkg_triplet_win, "lib")
+}
+
 filter "system:linux"
-vcpkg_triplet = "x64-linux"
+local vcpkg_triplet_linux = "x64-linux"
+includedirs {
+    path.join(vcpkg_installed, vcpkg_triplet_linux, "include")
+}
+libdirs {
+    path.join(vcpkg_installed, vcpkg_triplet_linux, "lib")
+}
+
 filter {}
 
--- vcpkg include and lib directories
-includedirs {
-    path.join(vcpkg_root, "installed", vcpkg_triplet, "include")
+-- Libraries from vcpkg (platform-specific names)
+filter "system:windows"
+links {
+    "glfw3", -- staticdll", -- or glfw3 for static linking
+    "vulkan-1"
 }
 
-libdirs {
-    path.join(vcpkg_root, "installed", vcpkg_triplet, "lib")
-}
-
--- Libraries from vcpkg
+filter "system:linux"
 links {
     "fmt",
-    "glfw3",
+    "glfw",
     "vulkan"
 }
 
--- Platform-specific configurations
-filter "system:windows"
-defines { "_CRT_SECURE_NO_WARNINGS" }
+filter {}
+
+-- Compiler-specific configurations
+filter "toolset:msc*"
+defines { "_CRT_SECURE_NO_WARNINGS", "FMT_SHARED" }
 buildoptions { "/std:c++latest" }
 
--- Debug configuration for Windows
-filter { "system:windows", "configurations:Debug" }
-libdirs {
-    path.join(vcpkg_root, "installed", vcpkg_triplet, "debug/lib")
-}
-links {
-    "fmtd", -- Debug version of fmt
-    "glfw3"
-}
-
--- Release configuration for Windows
-filter { "system:windows", "configurations:Release" }
-links {
-    "fmt",
-    "glfw3"
-}
+filter { "system:windows", "toolset:not msc*" }
+defines { "_CRT_SECURE_NO_WARNINGS", "FMT_SHARED" }
+buildoptions { "-std=c++23" }
 
 filter "system:linux"
 buildoptions { "-std=c++23" }
 
+-- Debug configuration for Windows
+filter { "system:windows", "configurations:Debug" }
+local vcpkg_triplet_win = "x64-windows"
+libdirs {
+    path.join(vcpkg_installed, vcpkg_triplet_win, "debug/lib")
+}
+links {
+    "fmt" -- fmt on Windows needs special handling for MinGW
+}
+-- Note: glfw3dll and vulkan-1 are already linked above
+
+-- Release configuration for Windows
+filter { "system:windows", "configurations:Release" }
+links {
+    "fmt" -- fmt release library
+}
+-- Use release libs from main lib directory
+
 -- Debug configuration for Linux
 filter { "system:linux", "configurations:Debug" }
+local vcpkg_triplet_linux = "x64-linux"
 libdirs {
-    path.join(vcpkg_root, "installed", vcpkg_triplet, "debug/lib")
+    path.join(vcpkg_installed, vcpkg_triplet_linux, "debug/lib")
 }
 
 -- Release configuration for Linux
 filter { "system:linux", "configurations:Release" }
--- Use release libs
+-- Use release libs from main lib directory
 
 filter {}
 
