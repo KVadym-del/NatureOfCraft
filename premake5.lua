@@ -44,9 +44,8 @@ includedirs {
 local vcpkg_installed = "vcpkg_installed"
 
 -- vcpkg include and lib directories (manifest mode uses local vcpkg_installed/)
--- Use x64-windows-static for static linking on Windows (avoids DLL issues with MinGW)
 filter "system:windows"
-local vcpkg_triplet_win = "x64-windows-static"
+local vcpkg_triplet_win = "x64-windows"
 includedirs {
     path.join(vcpkg_installed, vcpkg_triplet_win, "include")
 }
@@ -68,7 +67,7 @@ filter {}
 -- Libraries from vcpkg (platform-specific names)
 filter "system:windows"
 links {
-    "glfw3", -- staticdll", -- or glfw3 for static linking
+    "glfw3dll", -- or glfw3 for static linking
     "vulkan-1"
 }
 
