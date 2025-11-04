@@ -87,7 +87,8 @@ Result<> Vulkan::draw_frame() noexcept
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || m_framebufferResized)
     {
         m_framebufferResized = false;
-        recreate_swap_chain();
+        if (auto result = recreate_swap_chain(); !result)
+            return result;
         return {};
     }
     else if (result != VK_SUCCESS)
