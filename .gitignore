@@ -8,3 +8,9 @@ compile_commands.json
 .cache/
 
 *.spv
+
+Makefile
+
+*.make
+
+build_conan
