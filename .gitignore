@@ -9,11 +9,8 @@ compile_commands.json
 
 *.spv
 
-MakeFile
+Makefile
 
 *.make
 
-vcpkg.json
-vcpkg-configuration.json
-
-vcpkg_installed/
+build_conan
