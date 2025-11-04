@@ -17,6 +17,8 @@
 #endif // _WIN32
 #include <GLFW/glfw3native.h>
 
+constexpr const int32_t MAX_FRAMES_IN_FLIGHT{2};
+
 struct QueueFamilyIndices
 {
     std::optional<uint32_t> graphicsFamily;
@@ -45,6 +47,13 @@ class Vulkan
   public:
     Result<> initialize() noexcept
     {
+        if (m_window == nullptr)
+        {
+            return make_error("GLFW window is null", ErrorCode::VulkanGLFWWindowIsNull);
+        }
+        glfwSetWindowUserPointer(m_window, this);
+        glfwSetFramebufferSizeCallback(m_window, framebuffer_resize_callback);
+
         if (auto result = this->create_instance(); !result)
             return result;
         if (auto result = this->setup_debug_messenger(); !result)
@@ -67,7 +76,7 @@ class Vulkan
             return result;
         if (auto result = this->create_command_pool(); !result)
             return result;
-        if (auto result = this->create_command_buffer(); !result)
+        if (auto result = this->create_command_buffers(); !result)
             return result;
         if (auto result = this->create_sync_objects(); !result)
             return result;
@@ -82,6 +91,8 @@ class Vulkan
     void cleanup() noexcept;
 
   private:
+    static void framebuffer_resize_callback(GLFWwindow* window, int width, int height);
+
     Result<> setup_debug_messenger();
 
     void populate_debug_messenger_create_info(VkDebugUtilsMessengerCreateInfoEXT& createInfo) noexcept;
@@ -127,6 +138,10 @@ class Vulkan
 
     Result<> create_swap_chain();
 
+    void cleanup_swap_chain();
+
+    Result<> recreate_swap_chain();
+
     Result<> create_image_views();
 
     Result<> create_graphics_pipeline();
@@ -139,7 +154,7 @@ class Vulkan
 
     Result<> create_command_pool();
 
-    Result<> create_command_buffer();
+    Result<> create_command_buffers();
 
     Result<> record_command_buffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) noexcept;
 
@@ -186,9 +201,13 @@ class Vulkan
     std::vector<VkFramebuffer> m_swapChainFramebuffers{};
 
     VkCommandPool m_commandPool{};
-    VkCommandBuffer m_commandBuffer{};
+    std::vector<VkCommandBuffer> m_commandBuffers{};
 
-    VkSemaphore m_imageAvailableSemaphore{};
-    VkSemaphore m_renderFinishedSemaphore{};
-    VkFence m_inFlightFence{};
+    std::vector<VkSemaphore> m_imageAvailableSemaphores{};
+    std::vector<VkSemaphore> m_renderFinishedSemaphores{};
+    std::vector<VkFence> m_inFlightFences{};
+
+    bool m_framebufferResized{false};
+
+    uint32_t m_currentFrame{};
 };

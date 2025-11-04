@@ -19,7 +19,8 @@ enum class ErrorCode
     FileReadFailed = 100,
 
     // Vulkan Errors
-    VulkanInstanceCreationFailed = 200,
+    VulkanGLFWWindowIsNull = 200,
+    VulkanInstanceCreationFailed,
     VulkanValidationLayersNotSupported,
     VulkanDebugMessengerCreationFailed,
     VulkanPhysicalDeviceSelectionFailed,

@@ -8,7 +8,6 @@ Result<> Window::init()
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
     this->m_window = glfwCreateWindow(this->m_width, this->m_height, this->m_windowTitle.data(), nullptr, nullptr);
     if (!this->m_window)
@@ -41,9 +40,10 @@ Result<> Window::loop(std::function<Result<>()> draw_frame)
 
 void Window::cleanup() noexcept
 {
-    if (!this->m_window)
+    if (this->m_window)
     {
         glfwDestroyWindow(this->m_window);
+        this->m_window = nullptr;
     }
     glfwTerminate();
 }
