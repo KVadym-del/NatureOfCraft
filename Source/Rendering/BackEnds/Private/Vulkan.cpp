@@ -712,12 +712,12 @@ Result<> Vulkan::create_image_views()
 
 Result<> Vulkan::create_graphics_pipeline()
 {
-    auto vertShaderCodeResult = read_file("src/Resources/vert.spv");
+    auto vertShaderCodeResult = read_file("Editor/Resources/vert.spv");
     if (!vertShaderCodeResult)
         return make_error(vertShaderCodeResult.error());
     auto vertShaderCode = vertShaderCodeResult.value();
 
-    auto fragShaderCode = read_file("src/Resources/frag.spv");
+    auto fragShaderCode = read_file("Editor/Resources/frag.spv");
     if (!fragShaderCode)
         return make_error(fragShaderCode.error());
     auto fragShaderCodeValue = fragShaderCode.value();
@@ -1022,7 +1022,14 @@ Result<> Vulkan::record_command_buffer(VkCommandBuffer commandBuffer, uint32_t i
     scissor.extent = this->m_swapChainExtent;
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    vkCmdDraw(commandBuffer, 6, 1, 0, 0);
+
+    // Call optional UI render callback (e.g., ImGui Vulkan backend)
+    {
+        const auto& uiCb = this->get_ui_render_callback();
+        if (uiCb)
+            uiCb(commandBuffer);
+    }
 
     vkCmdEndRenderPass(commandBuffer);
 

@@ -2,6 +2,7 @@
 #include "../../../Core/Public/Expected.hpp"
 
 #include <array>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -160,6 +161,63 @@ class Vulkan
 
     Result<> create_sync_objects();
 
+  public:
+    inline VkInstance get_instance() const noexcept
+    {
+        return m_instance;
+    }
+    inline VkPhysicalDevice get_physical_device() const noexcept
+    {
+        return m_physicalDevice;
+    }
+    inline VkDevice get_device() const noexcept
+    {
+        return m_device;
+    }
+    inline VkQueue get_graphics_queue() const noexcept
+    {
+        return m_graphicsQueue;
+    }
+    inline VkQueue get_present_queue() const noexcept
+    {
+        return m_presentQueue;
+    }
+    inline VkRenderPass get_render_pass() const noexcept
+    {
+        return m_renderPass;
+    }
+    inline VkExtent2D get_swapchain_extent() const noexcept
+    {
+        return m_swapChainExtent;
+    }
+    inline uint32_t get_swapchain_image_count() const noexcept
+    {
+        return static_cast<uint32_t>(m_swapChainImages.size());
+    }
+    inline VkCommandPool get_command_pool() const noexcept
+    {
+        return m_commandPool;
+    }
+    inline uint32_t get_current_frame_index() const noexcept
+    {
+        return m_currentFrame;
+    }
+    inline uint32_t get_graphics_queue_family_index() noexcept
+    {
+        return find_queue_families(m_physicalDevice).graphicsFamily.value();
+    }
+
+    using UIRenderCallback = std::function<void(VkCommandBuffer)>;
+    inline void set_ui_render_callback(const UIRenderCallback& cb) noexcept
+    {
+        m_uiRenderCallback = cb;
+    }
+
+    inline const UIRenderCallback& get_ui_render_callback() const noexcept
+    {
+        return m_uiRenderCallback;
+    }
+
   private:
     static constexpr std::array<const char*, 1> m_validationLayers{
         "VK_LAYER_KHRONOS_validation",
@@ -210,4 +268,6 @@ class Vulkan
     bool m_framebufferResized{false};
 
     uint32_t m_currentFrame{};
+
+    UIRenderCallback m_uiRenderCallback{};
 };
