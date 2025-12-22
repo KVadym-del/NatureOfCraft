@@ -1,0 +1,17 @@
+{
+  "dependencies": [
+    "fmt",
+    "glfw3",
+    {
+      "name": "imgui",
+      "features": [
+        "glfw-binding",
+        "vulkan-binding"
+      ]
+    },
+    "shaderc",
+    "vulkan",
+    "vulkan-headers",
+    "vulkan-loader"
+  ]
+}

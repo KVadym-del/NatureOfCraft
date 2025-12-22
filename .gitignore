@@ -1,0 +1,8 @@
+.vs/
+
+out/
+vcpkg_installed/
+
+compile_commands.json
+
+.cache/

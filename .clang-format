@@ -1,0 +1,8 @@
+BasedOnStyle: Microsoft
+IndentWidth: 4
+DerivePointerAlignment: false
+PointerAlignment: Left
+
+BreakBeforeBraces: Custom
+BraceWrapping:
+  SplitEmptyFunction: false
