@@ -1,5 +1,6 @@
 {
   "dependencies": [
+    "ffmpeg",
     "fmt",
     "glfw3",
     {
@@ -13,6 +14,6 @@
     "vulkan",
     "vulkan-headers",
     "vulkan-loader",
-    "ffmpeg"
+    "portaudio"
   ]
 }
