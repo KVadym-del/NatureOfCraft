@@ -1,156 +1,113 @@
 # NatureOfCraft
 
-A Vulkan + GLFW + fmt C++23 project. You can build it either with Conan 2 + Premake5 (recommended) or with the legacy `nob` builder.
+A Vulkan-based C++26 project using CMake, vcpkg, and GLFW.
 
 ## Prerequisites
 
-- Linux (x86_64)
-- C/C++ toolchain
-  - GCC or Clang (C++23 capable)
-- Conan 2.x
-- Premake 5.x
-- glslc (for shader compilation)
-  - Provided by the Vulkan SDK or shaderc packages in your distro
-- Vulkan drivers/runtime installed on your system
-  - Ensure your system Vulkan ICD/driver is installed (e.g., Mesa Vulkan drivers)
+- **Windows** (x64) or **Linux** (x86_64)
+- **C/C++ toolchain**
+  - MSVC (Visual Studio 2022/2026) on Windows
+  - GCC or Clang (C++26 capable) on Linux
+- **CMake** 3.10 or higher
+- **vcpkg** (integrated with Visual Studio or standalone)
+- **Vulkan SDK** (optional, vcpkg provides vulkan-loader/headers)
+  - Required for `glslc` shader compiler if not using vcpkg's shaderc
 
-Tip:
+## Dependencies (managed by vcpkg)
 
-- Ensure `glslc`, `premake5`, and your compiler are in PATH.
-- Conan will provide fmt, glfw, vulkan-loader, and headers automatically.
+- `fmt` - Formatting library
+- `glfw3` - Window/input handling
+- `imgui` - Immediate mode GUI (with GLFW and Vulkan bindings)
+- `shaderc` - Shader compilation (provides `glslc`)
+- `vulkan`, `vulkan-headers`, `vulkan-loader` - Vulkan API
 
-## Project layout
+## Building with Visual Studio (Windows)
 
-- Source: `src/`
-- Build artifacts:
-  - Premake objects: `build/Debug`, `build/Release`
-  - Binaries: `bin/Debug/NatureOfCraft`, `bin/Release/NatureOfCraft`
-- Conan generator output: `build_conan/`
-- Shaders (compiled automatically by Premake prebuild commands):
-  - `src/Resources/shader.vert` -> `src/Resources/vert.spv`
-  - `src/Resources/shader.frag` -> `src/Resources/frag.spv`
+### Using Visual Studio's CMake Integration
 
-## Build with Conan 2 + Premake5 (recommended)
+1. **Open the project folder** in Visual Studio 2022 or later
+   - Visual Studio will automatically detect `CMakeLists.txt` and configure the project
 
-The build uses Conan’s Premake generators and a Premake5 project that sets C++23 and wires everything up.
+2. **vcpkg integration**
+   - If using Visual Studio's integrated vcpkg, dependencies are installed automatically
+   - Otherwise, ensure `CMAKE_TOOLCHAIN_FILE` points to your vcpkg installation:
+     ```
+     -DCMAKE_TOOLCHAIN_FILE=<path-to-vcpkg>/scripts/buildsystems/vcpkg.cmake
+     ```
 
-1. Install dependencies with Conan
+3. **Select configuration**
+   - Choose `x64-Debug` or `x64-Release` from the configuration dropdown
 
-Do this once per build type you intend to build:
+4. **Build**
+   - Use `Build > Build All` or press `Ctrl+Shift+B`
 
-Debug:
+5. **Run**
+   - Set `Editor` as the startup project and run with `F5`
 
-```bash
-conan install . --output-folder=build_conan --build=missing -s build_type=Debug
+### Using CMake from Command Line (Windows)
+
+```powershell
+# Configure (Debug)
+cmake -B out/build/x64-debug -S . -G "Ninja" ^
+    -DCMAKE_BUILD_TYPE=Debug ^
+    -DCMAKE_TOOLCHAIN_FILE="<path-to-vcpkg>/scripts/buildsystems/vcpkg.cmake"
+
+# Build
+cmake --build out/build/x64-debug
+
+# Run
+./out/build/x64-debug/Editor/Editor.exe
 ```
 
-Release:
+## Building on Linux
 
 ```bash
-conan install . --output-folder=build_conan --build=missing -s build_type=Release
+# Configure (Debug)
+cmake -B build -S . -G "Ninja" \
+    -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_TOOLCHAIN_FILE="<path-to-vcpkg>/scripts/buildsystems/vcpkg.cmake"
+
+# Build
+cmake --build build
+
+# Run
+./build/Editor/Editor
 ```
 
-This generates `build_conan/conantoolchain.premake5.lua` and `build_conan/conandeps.premake5.lua` used by Premake.
+## Shader Compilation
 
-2. Generate the Makefiles with Premake
+Shaders are automatically compiled during the build process:
+- `Editor/Resources/shader.vert` → `vert.spv`
+- `Editor/Resources/shader.frag` → `frag.spv`
 
-```bash
-premake5 gmake
-```
+The build system uses `glslc` from either:
+- Vulkan SDK (`$VULKAN_SDK/Bin`)
+- vcpkg's shaderc package
 
-3. Build
+## Editor/IDE Integration
 
-Debug:
+### Visual Studio
+The project is fully integrated with Visual Studio's CMake support. IntelliSense works out of the box.
 
-```bash
-make clean config=debug
-make config=debug -j
-```
-
-Release:
-
-```bash
-make clean config=release
-make config=release -j
-```
-
-The shaders are compiled automatically by prebuild commands using `glslc`.
-
-4. Run
-
-It’s best to activate the Conan runtime environment so dynamic libraries are located correctly:
-
-```bash
-source build_conan/conanrun.sh
-./bin/Debug/NatureOfCraft
-# or
-./bin/Release/NatureOfCraft
-```
-
-Notes:
-
-- If you change dependencies or switch compilers, re-run the `conan install` step for the corresponding build type and regenerate with `premake5 gmake`.
-- If you encounter runtime loader issues, ensure you sourced `build_conan/conanrun.sh`.
-
-## Editor/IDE integration (clangd)
-
-To generate `compile_commands.json` for clangd using the Premake + Make build, you can use Bear:
-
-```bash
-rm -f compile_commands.json
-bear -- make clean config=debug
-bear -- make config=debug -j
-```
-
-This will create `compile_commands.json` at the project root, which clangd can use.
-
-## Legacy: Build with the `nob` builder
-
-This project also includes a small C build script (`nob.c`) that can directly compile and link the project with clang++. It does not use Conan and expects dependencies available on the system (e.g., `-lfmt -lglfw -lvulkan`). Keep using it only if you know your system provides everything needed.
-
-1. Build the builder:
-
-```bash
-cc nob.c -o nob
-```
-
-2. Build and run:
-
-Debug (default):
-
-```bash
-./nob
-# or explicitly
-./nob debug
-```
-
-Release:
-
-```bash
-./nob release
-```
-
-If you modify `nob.c`, just run `./nob` again; it can self-rebuild using `nob.h` logic.
+### clangd / VS Code
+A `compile_commands.json` is generated in the build directory. Either:
+- Symlink it to the project root: `ln -s out/build/x64-debug/compile_commands.json .`
+- Or configure your editor to look in the build directory
 
 ## Troubleshooting
 
-- Undefined references to Vulkan/GLFW/fmt:
-  - Make sure you ran `conan install` for the correct build type (Debug/Release).
-  - Clean stale objects: `make clean config=debug` (or release) and rebuild.
-  - Regenerate Makefiles if needed: `premake5 gmake2`.
+### glslc not found
+- Install the Vulkan SDK, or
+- Ensure vcpkg's `shaderc` package is installed (it's in `vcpkg.json`)
 
-- glslc not found:
-  - Install a package that provides `glslc` (commonly from the Vulkan SDK or shaderc packages in your distro).
+### Undefined references to Vulkan/GLFW/fmt
+- Ensure vcpkg dependencies are installed: check that `vcpkg_installed/` directory exists
+- Clean and rebuild: delete the `out/` folder and reconfigure
 
-- Vulkan runtime issues:
-  - Ensure your system’s Vulkan driver/ICD is installed and discoverable (e.g., Mesa Vulkan drivers).
+### Runtime errors finding DLLs (Windows)
+- The build copies `Source.dll` to the Editor output directory automatically
+- Ensure vcpkg DLLs are in PATH or copied to the output directory
 
-- Switching compilers (e.g., to Clang):
-  - Export environment variables before building:
-    ```bash
-    export CC=clang
-    export CXX=clang++
-    premake5 gmake2
-    make clean config=debug && make config=debug -j
-    ```
-  - Re-run the `conan install` steps if necessary, so ABI and libstdc++ variants match your compiler/runtime.
+### Vulkan validation layer errors
+- Install the Vulkan SDK for validation layers
+- On Windows, layers are typically at `%VULKAN_SDK%\Bin`
