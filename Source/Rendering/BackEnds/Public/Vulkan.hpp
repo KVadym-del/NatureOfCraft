@@ -45,7 +45,10 @@ class NOC_EXPORT Vulkan
   public:
     inline Vulkan(GLFWwindow* window) : m_window(window)
     {}
-    ~Vulkan() = default;
+    inline ~Vulkan()
+    {
+        this->cleanup();
+    };
 
   public:
     Result<> initialize() noexcept
@@ -163,6 +166,16 @@ class NOC_EXPORT Vulkan
 
     Result<> create_sync_objects();
 
+    // Media
+    Result<> init_video_texture(uint32_t width, uint32_t height);
+    void update_video_texture(const uint8_t* pixels);
+
+    uint32_t find_memory_type(uint32_t typeFilter, VkMemoryPropertyFlags properties);
+
+    void create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer,
+                       VkDeviceMemory& bufferMemory);
+
+
   public:
     inline VkInstance get_instance() const noexcept
     {
@@ -220,6 +233,21 @@ class NOC_EXPORT Vulkan
         return m_uiRenderCallback;
     }
 
+    VkDescriptorSet get_video_descriptor_set() const
+    {
+        return m_videoDescriptorSet;
+    }
+
+    VkSampler get_video_sampler() const
+    {
+        return m_videoSampler;
+    }
+
+    VkImageView get_video_image_view() const
+    {
+        return m_videoImageView;
+    }
+
   private:
     static constexpr std::array<const char*, 1> m_validationLayers{
         "VK_LAYER_KHRONOS_validation",
@@ -274,6 +302,17 @@ class NOC_EXPORT Vulkan
     uint32_t m_currentFrame{};
 
     UIRenderCallback m_uiRenderCallback{};
+
+    VkImage m_videoImage{};
+    VkDeviceMemory m_videoImageMemory{};
+    VkImageView m_videoImageView{};
+    VkSampler m_videoSampler{};
+    VkDescriptorSet m_videoDescriptorSet{};
+
+    VkBuffer m_stagingBuffer{};
+    VkDeviceMemory m_stagingBufferMemory{};
+    uint32_t m_videoWidth{};
+    uint32_t m_videoHeight{};
 };
 
 NOC_RESTORE_DLL_WARNINGS

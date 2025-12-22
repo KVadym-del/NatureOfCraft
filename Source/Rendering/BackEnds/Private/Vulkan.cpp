@@ -16,6 +16,8 @@
 
 #include <GLFW/glfw3.h>
 
+#include <imgui_impl_vulkan.h>
+
 /// Public methods
 
 Result<> Vulkan::draw_frame() noexcept
@@ -70,7 +72,6 @@ Result<> Vulkan::draw_frame() noexcept
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &this->m_commandBuffers[m_currentFrame];
 
-    // Use per-image semaphore indexed by the acquired image
     std::array<VkSemaphore, 1> signalSemaphores{
         this->m_renderFinishedSemaphores[imageIndex],
     };
@@ -95,7 +96,7 @@ Result<> Vulkan::draw_frame() noexcept
     presentInfo.pSwapchains = swapChains.data();
     presentInfo.pImageIndices = &imageIndex;
 
-    presentInfo.pResults = nullptr; // Optional
+    presentInfo.pResults = nullptr;
 
     result = vkQueuePresentKHR(this->m_presentQueue, &presentInfo);
 
@@ -125,27 +126,57 @@ void Vulkan::cleanup() noexcept
 {
     if (this->m_device)
         vkDeviceWaitIdle(this->m_device);
+
+    if (m_videoSampler)
+    {
+        vkDestroySampler(m_device, m_videoSampler, nullptr);
+        m_videoSampler = VK_NULL_HANDLE;
+    }
+    if (m_videoImageView)
+    {
+        vkDestroyImageView(m_device, m_videoImageView, nullptr);
+        m_videoImageView = VK_NULL_HANDLE;
+    }
+    if (m_videoImage)
+    {
+        vkDestroyImage(m_device, m_videoImage, nullptr);
+        m_videoImage = VK_NULL_HANDLE;
+    }
+    if (m_videoImageMemory)
+    {
+        vkFreeMemory(m_device, m_videoImageMemory, nullptr);
+        m_videoImageMemory = VK_NULL_HANDLE;
+    }
+    if (m_stagingBuffer)
+    {
+        vkDestroyBuffer(m_device, m_stagingBuffer, nullptr);
+        m_stagingBuffer = VK_NULL_HANDLE;
+    }
+    if (m_stagingBufferMemory)
+    {
+        vkFreeMemory(m_device, m_stagingBufferMemory, nullptr);
+        m_stagingBufferMemory = VK_NULL_HANDLE;
+    }
+
     cleanup_swap_chain();
 
-    // Destroy per-frame sync objects
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         vkDestroySemaphore(this->m_device, this->m_imageAvailableSemaphores[i], nullptr);
         vkDestroyFence(this->m_device, this->m_inFlightFences[i], nullptr);
     }
 
-    // Destroy per-image sync objects
     for (size_t i = 0; i < m_renderFinishedSemaphores.size(); i++)
     {
         vkDestroySemaphore(this->m_device, this->m_renderFinishedSemaphores[i], nullptr);
     }
 
     vkDestroyCommandPool(this->m_device, this->m_commandPool, nullptr);
-
+    
     vkDestroyPipeline(this->m_device, this->m_graphicsPipeline, nullptr);
     vkDestroyPipelineLayout(this->m_device, this->m_pipelineLayout, nullptr);
     vkDestroyRenderPass(this->m_device, this->m_renderPass, nullptr);
-
+    
     vkDestroyDevice(this->m_device, nullptr);
 
     if (this->m_enableValidationLayers)
@@ -154,9 +185,9 @@ void Vulkan::cleanup() noexcept
     }
 
     vkDestroySurfaceKHR(this->m_instance, this->m_surface, nullptr);
-
+    
     vkDestroyInstance(this->m_instance, nullptr);
-}
+   }
 
 /// Private methods
 
@@ -1088,11 +1119,9 @@ Result<> Vulkan::record_command_buffer(VkCommandBuffer commandBuffer, uint32_t i
 
 Result<> Vulkan::create_sync_objects()
 {
-    // Per-frame sync objects
     m_imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
     m_inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
     
-    // Per-swapchain-image sync objects
     m_renderFinishedSemaphores.resize(m_swapChainImages.size());
     m_imagesInFlight.resize(m_swapChainImages.size(), VK_NULL_HANDLE);
 
@@ -1114,7 +1143,6 @@ Result<> Vulkan::create_sync_objects()
         }
     }
 
-    // Create per-image render finished semaphores
     for (size_t i = 0; i < m_swapChainImages.size(); i++)
     {
         if (vkCreateSemaphore(this->m_device, &semaphoreInfo, nullptr, &this->m_renderFinishedSemaphores[i]) !=
@@ -1126,4 +1154,180 @@ Result<> Vulkan::create_sync_objects()
     }
 
     return {};
+}
+
+uint32_t Vulkan::find_memory_type(uint32_t typeFilter, VkMemoryPropertyFlags properties)
+{
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memProperties);
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
+    {
+        if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
+        {
+            return i;
+        }
+    }
+    return 0;
+}
+
+void Vulkan::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
+                           VkBuffer& buffer, VkDeviceMemory& bufferMemory)
+{
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = size;
+    bufferInfo.usage = usage;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    vkCreateBuffer(m_device, &bufferInfo, nullptr, &buffer);
+
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(m_device, buffer, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = find_memory_type(memRequirements.memoryTypeBits, properties);
+
+    vkAllocateMemory(m_device, &allocInfo, nullptr, &bufferMemory);
+    vkBindBufferMemory(m_device, buffer, bufferMemory, 0);
+}
+
+Result<> Vulkan::init_video_texture(uint32_t width, uint32_t height)
+{
+    m_videoWidth = width;
+    m_videoHeight = height;
+    VkDeviceSize imageSize = width * height * 4;
+
+    create_buffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, m_stagingBuffer,
+                  m_stagingBufferMemory);
+
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = width;
+    imageInfo.extent.height = height;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateImage(m_device, &imageInfo, nullptr, &m_videoImage) != VK_SUCCESS)
+        return make_error("Failed to create video image");
+
+    VkMemoryRequirements memReqs;
+    vkGetImageMemoryRequirements(m_device, m_videoImage, &memReqs);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReqs.size;
+    allocInfo.memoryTypeIndex = find_memory_type(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    if (vkAllocateMemory(m_device, &allocInfo, nullptr, &m_videoImageMemory) != VK_SUCCESS)
+        return make_error("Failed to allocate video image memory");
+
+    vkBindImageMemory(m_device, m_videoImage, m_videoImageMemory, 0);
+
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = m_videoImage;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(m_device, &viewInfo, nullptr, &m_videoImageView) != VK_SUCCESS)
+        return make_error("Failed to create video image view");
+
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+
+    if (vkCreateSampler(m_device, &samplerInfo, nullptr, &m_videoSampler) != VK_SUCCESS)
+        return make_error("Failed to create video sampler");
+    return {};
+}
+
+void Vulkan::update_video_texture(const uint8_t* pixels)
+{
+    if (!pixels || m_stagingBufferMemory == VK_NULL_HANDLE)
+        return;
+
+    VkDeviceSize imageSize = m_videoWidth * m_videoHeight * 4;
+
+    void* data;
+    vkMapMemory(m_device, m_stagingBufferMemory, 0, imageSize, 0, &data);
+    memcpy(data, pixels, static_cast<size_t>(imageSize));
+    vkUnmapMemory(m_device, m_stagingBufferMemory);
+
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = m_commandPool;
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer;
+    vkAllocateCommandBuffers(m_device, &allocInfo, &commandBuffer);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = m_videoImage;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                         nullptr, 0, nullptr, 1, &barrier);
+
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {m_videoWidth, m_videoHeight, 1};
+
+    vkCmdCopyBufferToImage(commandBuffer, m_stagingBuffer, m_videoImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                           &region);
+
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
+                         nullptr, 0, nullptr, 1, &barrier);
+
+    vkEndCommandBuffer(commandBuffer);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(m_graphicsQueue);
+
+    vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
 }

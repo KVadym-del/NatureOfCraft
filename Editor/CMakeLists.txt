@@ -1,4 +1,5 @@
-﻿set(UIFiles "./Source/UI/ImGuiLayer.cpp" "./Source/UI/ImGuiLayer.hpp")
+﻿set(MediaFiles "./Source/Media/VideoPlayer.hpp")
+set(UIFiles "./Source/UI/ImGuiLayer.cpp" "./Source/UI/ImGuiLayer.hpp")
 set(EditorFiles "./Source/main.cpp")
 
 add_compile_options("$<$<C_COMPILER_ID:MSVC>:/utf-8>")
@@ -6,6 +7,7 @@ add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
 
 find_package(imgui CONFIG REQUIRED)
 find_package(Vulkan REQUIRED)
+find_package(FFMPEG REQUIRED)
 
 find_program(GLSLC_EXECUTABLE NAMES glslc 
     HINTS 
@@ -42,7 +44,7 @@ endforeach()
 add_custom_target(CompileShaders ALL DEPENDS ${SPV_FILES})
 
 add_executable(Editor 
-	${ThirdPartyFiles} 
+	${MediaFiles} 
 	${UIFiles} 
 	${EditorFiles}
 )
@@ -59,7 +61,6 @@ if (CMAKE_VERSION VERSION_GREATER 3.25)
 endif()
 
 target_link_libraries(Editor PRIVATE Source)
-target_link_libraries(Editor PRIVATE imgui::imgui)
 
 add_custom_command(TARGET Editor POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
