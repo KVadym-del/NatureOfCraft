@@ -1,4 +1,4 @@
-﻿set(MediaFiles "./Source/Media/VideoPlayer.hpp" "./Source/Media/AudioPlayer.hpp")
+﻿set(MediaFiles "./Source/Media/VideoPlayer.hpp" "./Source/Media/AudioPlayer.hpp" "./Source/Media/MediaPlayer.hpp")
 set(UIFiles "./Source/UI/ImGuiLayer.cpp" "./Source/UI/ImGuiLayer.hpp")
 set(EditorFiles "./Source/main.cpp")
 

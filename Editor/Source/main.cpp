@@ -1,6 +1,5 @@
 #include "UI/ImGuiLayer.hpp"
-#include "Media/VideoPlayer.hpp"
-#include "Media/AudioPlayer.hpp"
+#include "Media/MediaPlayer.hpp"
 #include <Rendering/BackEnds/Public/Vulkan.hpp>
 #include <Window/Public/Window.hpp>
 #include <imgui.h>
@@ -24,37 +23,40 @@ int main()
     if (!Editor::UI::InitializeImGuiForVulkan(vulkan, window.get_glfw_window()))
         return -1;
 
-    VideoPlayer player{};
-    bool videoLoaded = player.open("C:/Users/vadym/Downloads/gg32.mp4");
+    // Use unified MediaPlayer for both video and audio
+    MediaPlayer mediaPlayer{};
+    bool mediaLoaded = mediaPlayer.open("C:/Users/vadym/Downloads/gg32.mp4");
+    
     VkDescriptorSet videoDescriptorSet = VK_NULL_HANDLE;
-    if (videoLoaded)
+    if (mediaLoaded && mediaPlayer.has_video())
     {
-        vulkan.init_video_texture(player.get_width(), player.get_height());
+        vulkan.init_video_texture(mediaPlayer.get_video_width(), mediaPlayer.get_video_height());
         videoDescriptorSet = ImGui_ImplVulkan_AddTexture(
             vulkan.get_video_sampler(),
             vulkan.get_video_image_view(),
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
-    AudioPlayer audioPlayer{};
-    bool audioLoaded = audioPlayer.open("C:/Users/vadym/Downloads/gg32.mp4");
-    if (audioLoaded)
+    // Start playback
+    if (mediaLoaded)
     {
-        audioPlayer.play();
+        mediaPlayer.play();
     }
 
     if (auto code = get_error_code(window.loop([&]() {
-            if (audioLoaded)
+            // Update media player (decodes audio/video, keeps buffers filled)
+            if (mediaLoaded)
             {
-                audioPlayer.decode_audio_frames();
-            }
+                mediaPlayer.update();
 
-            if (videoLoaded)
-            {
-                uint8_t* pixels = player.grab_next_frame();
-                if (pixels)
+                // Grab and display video frame (synchronized to audio)
+                if (mediaPlayer.has_video())
                 {
-                    vulkan.update_video_texture(pixels);
+                    uint8_t* pixels = mediaPlayer.grab_video_frame();
+                    if (pixels)
+                    {
+                        vulkan.update_video_texture(pixels);
+                    }
                 }
             }
 
@@ -72,34 +74,55 @@ int main()
                 | ImGuiWindowFlags_NoMove
             );
 
-            if (videoLoaded)
+            if (mediaLoaded && mediaPlayer.has_video())
             {
                 ImGui::Image((ImTextureID)videoDescriptorSet, ImGui::GetContentRegionAvail());
             }
             else
             {
-                ImGui::Text("Could not load video.");
+                ImGui::Text("Could not load media.");
             }
 
-            ImGui::SetCursorPos(ImVec2(20, ImGui::GetWindowHeight() - 50));
-            if (ImGui::Button("Play/Pause"))
+            // Control bar
+            ImGui::SetCursorPos(ImVec2(20, ImGui::GetWindowHeight() - 70));
+            
+            if (ImGui::Button(mediaPlayer.is_playing() ? "Pause" : "Play"))
             {
-                if (audioLoaded)
-                {
-                    audioPlayer.toggle_playback();
-                }
+                mediaPlayer.toggle_playback();
             }
 
             ImGui::SameLine();
-            if (audioLoaded)
+            if (ImGui::Button("Stop"))
             {
-                ImGui::Text("Audio: %s | Buffer: %zu samples",
-                    audioPlayer.is_playing() ? "Playing" : "Paused",
-                    audioPlayer.get_buffer_size());
+                mediaPlayer.stop();
             }
-            else
+
+            // Playback time display
+            ImGui::SameLine();
+            double playbackTime = mediaPlayer.get_playback_clock();
+            int minutes = static_cast<int>(playbackTime) / 60;
+            int seconds = static_cast<int>(playbackTime) % 60;
+            ImGui::Text("Time: %02d:%02d", minutes, seconds);
+
+            // Status line
+            ImGui::SetCursorPos(ImVec2(20, ImGui::GetWindowHeight() - 30));
+            ImGui::Text("Status: %s", mediaPlayer.is_playing() ? "Playing" : "Paused");
+
+            if (mediaPlayer.has_video())
             {
-                ImGui::Text("Audio: Not loaded");
+                ImGui::SameLine();
+                ImGui::Text("| Video: %dx%d (queue: %zu)", 
+                    mediaPlayer.get_video_width(), 
+                    mediaPlayer.get_video_height(),
+                    mediaPlayer.get_video_queue_size());
+            }
+
+            if (mediaPlayer.has_audio())
+            {
+                ImGui::SameLine();
+                ImGui::Text("| Audio: %dHz (buf: %zu)",
+                    mediaPlayer.get_audio_sample_rate(),
+                    mediaPlayer.get_audio_buffer_size());
             }
 
             ImGui::End();

@@ -23,12 +23,12 @@ class AudioPlayer
 public:
     AudioPlayer() = default;
 
-    ~AudioPlayer()
+    inline ~AudioPlayer()
     {
         cleanup();
     }
 
-    bool open(const std::filesystem::path& filepath)
+    inline bool open(const std::filesystem::path& filepath)
     {
         if (avformat_open_input(&m_fmtCTX, filepath.string().c_str(), nullptr, nullptr) < 0)
             return false;
@@ -47,6 +47,8 @@ public:
 
         if (m_audioStreamIndex == -1)
             return false;
+
+        m_timeBase = av_q2d(m_fmtCTX->streams[m_audioStreamIndex]->time_base);
 
         AVCodecParameters* codecParams = m_fmtCTX->streams[m_audioStreamIndex]->codecpar;
         const AVCodec* codec = avcodec_find_decoder(codecParams->codec_id);
@@ -120,7 +122,7 @@ public:
         return true;
     }
 
-    bool play()
+    inline bool play()
     {
         if (!m_isOpen || m_isPlaying)
             return false;
@@ -136,7 +138,7 @@ public:
         return true;
     }
 
-    bool pause()
+    inline bool pause()
     {
         if (!m_isOpen || !m_isPlaying)
             return false;
@@ -152,7 +154,7 @@ public:
         return true;
     }
 
-    bool toggle_playback()
+    inline bool toggle_playback()
     {
         if (m_isPlaying)
             return pause();
@@ -160,7 +162,7 @@ public:
             return play();
     }
 
-    void decode_audio_frames()
+    inline void decode_audio_frames()
     {
         if (!m_isOpen)
             return;
@@ -179,6 +181,12 @@ public:
                 {
                     while (avcodec_receive_frame(m_codecCTX, m_frame) == 0)
                     {
+                        double framePts = 0.0;
+                        if (m_frame->pts != AV_NOPTS_VALUE)
+                        {
+                            framePts = m_frame->pts * m_timeBase;
+                        }
+
                         int outSamples = swr_get_out_samples(m_swrCTX, m_frame->nb_samples);
                         
                         std::vector<float> outBuffer(outSamples * m_channels);
@@ -195,6 +203,12 @@ public:
                         if (convertedSamples > 0)
                         {
                             std::lock_guard<std::mutex> lock(m_bufferMutex);
+                            
+                            if (m_audioBuffer.empty())
+                            {
+                                m_bufferStartPts = framePts;
+                            }
+
                             for (int i = 0; i < convertedSamples * m_channels; i++)
                             {
                                 m_audioBuffer.push(outBuffer[i]);
@@ -220,7 +234,15 @@ public:
         m_endOfFile = true;
     }
 
-    void cleanup()
+    inline double get_audio_clock() const
+    {
+        std::lock_guard<std::mutex> lock(m_bufferMutex);
+        double samplesInBuffer = static_cast<double>(m_audioBuffer.size()) / m_channels;
+        double bufferDuration = samplesInBuffer / m_sampleRate;
+        return m_currentPts - bufferDuration;
+    }
+
+    inline void cleanup()
     {
         if (m_isPlaying)
         {
@@ -254,20 +276,35 @@ public:
         m_isOpen = false;
     }
 
-    bool is_playing() const { return m_isPlaying; }
-    bool is_open() const { return m_isOpen; }
-    bool is_end_of_file() const { return m_endOfFile && m_audioBuffer.empty(); }
-    int get_sample_rate() const { return m_sampleRate; }
-    int get_channels() const { return m_channels; }
+    inline bool is_playing() const
+    {
+        return m_isPlaying;
+    }
+    inline bool is_open() const
+    {
+        return m_isOpen;
+    }
+    inline bool is_end_of_file() const
+    {
+        return m_endOfFile && m_audioBuffer.empty();
+    }
+    inline int get_sample_rate() const
+    {
+        return m_sampleRate;
+    }
+    inline int get_channels() const
+    {
+        return m_channels;
+    }
 
-    size_t get_buffer_size() const
+    inline size_t get_buffer_size() const
     {
         std::lock_guard<std::mutex> lock(m_bufferMutex);
         return m_audioBuffer.size();
     }
 
 private:
-    static int audioCallback(
+    inline static int audioCallback(
         const void* inputBuffer,
         void* outputBuffer,
         unsigned long framesPerBuffer,
@@ -284,17 +321,27 @@ private:
 
         std::lock_guard<std::mutex> lock(player->m_bufferMutex);
 
-        for (unsigned long i = 0; i < framesPerBuffer * player->m_channels; i++)
+        unsigned long samplesNeeded = framesPerBuffer * player->m_channels;
+        unsigned long samplesWritten = 0;
+
+        for (unsigned long i = 0; i < samplesNeeded; i++)
         {
             if (!player->m_audioBuffer.empty())
             {
                 out[i] = player->m_audioBuffer.front();
                 player->m_audioBuffer.pop();
+                samplesWritten++;
             }
             else
             {
                 out[i] = 0.0f;
             }
+        }
+
+        if (samplesWritten > 0)
+        {
+            double samplesConsumed = static_cast<double>(samplesWritten) / player->m_channels;
+            player->m_currentPts += samplesConsumed / player->m_sampleRate;
         }
 
         return paContinue;
@@ -309,12 +356,16 @@ private:
 
     int m_sampleRate{44100};
     int m_channels{2};
+    double m_timeBase{0.0};
 
     PaStream* m_stream{nullptr};
     bool m_paInitialized{false};
 
-    std::queue<float> m_audioBuffer;
-    mutable std::mutex m_bufferMutex;
+    std::queue<float> m_audioBuffer{};
+    mutable std::mutex m_bufferMutex{};
+
+    double m_bufferStartPts{0.0};
+    double m_currentPts{0.0};
 
     std::atomic<bool> m_isOpen{false};
     std::atomic<bool> m_isPlaying{false};
