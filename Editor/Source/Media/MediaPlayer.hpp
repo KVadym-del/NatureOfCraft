@@ -1,259 +1,136 @@
 #pragma once
-#include "VideoPlayer.hpp"
-#include "AudioPlayer.hpp"
-#include <filesystem>
-#include <memory>
-#include <chrono>
+
+#include <atomic>
+#include <condition_variable>
+#include <cstdint>
+#include <mutex>
+#include <queue>
+#include <string>
+#include <thread>
+#include <vector>
+
+extern "C"
+{
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/imgutils.h>
+#include <libavutil/time.h>
+#include <libavutil/opt.h>
+#include <libswresample/swresample.h>
+#include <libswscale/swscale.h>
+}
+
+// Include miniaudio header in the CPP file,
+// strictly use struct pointers here to keep compile times fast.
+struct ma_device;
+struct ma_context;
+
+// Helper struct for thread-safe queue (Same as before)
+template <typename T> class SafeQueue
+{
+    std::queue<T> queue;
+    std::mutex mutex;
+    std::condition_variable cond;
+
+  public:
+    void push(T item)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        queue.push(item);
+        cond.notify_one();
+    }
+    bool pop(T& item)
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        if (queue.empty())
+            return false;
+        item = queue.front();
+        queue.pop();
+        return true;
+    }
+    size_t size()
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        return queue.size();
+    }
+    void clear()
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        std::queue<T> empty;
+        std::swap(queue, empty);
+    }
+};
 
 class MediaPlayer
 {
-public:
-    MediaPlayer() = default;
+  public:
+    MediaPlayer();
+    ~MediaPlayer();
 
-    inline ~MediaPlayer()
-    {
-        cleanup();
-    }
+    bool open(const std::string& filepath);
+    void play();
+    void stop();
+    void toggle_playback();
+    void update();
 
-    inline bool open(const std::filesystem::path& filepath)
-    {
-        m_filepath = filepath;
+    // Video Access
+    bool has_video() const;
+    int get_video_width() const;
+    int get_video_height() const;
+    uint8_t* grab_video_frame();
+    size_t get_video_queue_size();
 
-        m_videoPlayer = std::make_unique<VideoPlayer>();
-        m_hasVideo = m_videoPlayer->open(filepath);
-        if (!m_hasVideo)
-        {
-            m_videoPlayer.reset();
-        }
+    // Audio Access
+    bool has_audio() const;
+    int get_audio_sample_rate() const;
+    size_t get_audio_buffer_size();
 
-        m_audioPlayer = std::make_unique<AudioPlayer>();
-        m_hasAudio = m_audioPlayer->open(filepath);
-        if (!m_hasAudio)
-        {
-            m_audioPlayer.reset();
-        }
+    // State
+    bool is_playing() const;
+    double get_playback_clock();
 
-        m_isOpen = m_hasVideo || m_hasAudio;
-        
-        if (!m_hasAudio && m_hasVideo)
-        {
-            m_useSystemClock = true;
-        }
+  private:
+    void cleanup();
+    void read_packets_thread();
 
-        return m_isOpen;
-    }
+    // Miniaudio Callback
+    static void ma_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, uint32_t frameCount);
+    void read_audio_data(uint8_t* stream, int len);
 
-    inline bool play()
-    {
-        if (!m_isOpen || m_isPlaying)
-            return false;
+    int decode_audio_frame(uint8_t* buffer, int buffer_size);
 
-        bool success = true;
+    AVFormatContext* fmt_ctx = nullptr;
 
-        if (m_hasVideo)
-            success &= m_videoPlayer->play();
+    // Video
+    int video_stream_idx = -1;
+    AVCodecContext* video_codec_ctx = nullptr;
+    SwsContext* sws_ctx = nullptr;
+    SafeQueue<AVPacket*> video_packet_queue;
+    std::vector<uint8_t> rgba_buffer;
+    std::atomic<bool> new_frame_ready{false};
 
-        if (m_hasAudio)
-            success &= m_audioPlayer->play();
+    AVFrame* video_frame = nullptr;
+    bool has_pending_frame = false;
 
-        if (success)
-        {
-            m_isPlaying = true;
-            if (m_useSystemClock)
-            {
-                m_playbackStartTime = std::chrono::steady_clock::now();
-            }
-        }
+    // Audio
+    int audio_stream_idx = -1;
+    AVCodecContext* audio_codec_ctx = nullptr;
+    SwrContext* swr_ctx = nullptr;
+    SafeQueue<AVPacket*> audio_packet_queue;
 
-        return success;
-    }
+    // Miniaudio structures
+    ma_device* audio_device = nullptr;
+    bool audio_device_ready = false;
 
-    inline bool pause()
-    {
-        if (!m_isOpen || !m_isPlaying)
-            return false;
+    // Synchronization & State
+    std::atomic<bool> playing{false};
+    std::atomic<bool> stop_threads{false};
+    std::thread demuxer_thread;
 
-        bool success = true;
+    std::vector<uint8_t> audio_intermediate_buf;
+    size_t audio_buf_index = 0;
+    size_t audio_buf_size = 0;
 
-        if (m_hasVideo)
-            success &= m_videoPlayer->pause();
-
-        if (m_hasAudio)
-            success &= m_audioPlayer->pause();
-
-        if (success)
-        {
-            m_isPlaying = false;
-            if (m_useSystemClock)
-            {
-                auto now = std::chrono::steady_clock::now();
-                m_pausedTime += std::chrono::duration<double>(now - m_playbackStartTime).count();
-            }
-        }
-
-        return success;
-    }
-
-    inline bool toggle_playback()
-    {
-        if (m_isPlaying)
-            return pause();
-        else
-            return play();
-    }
-
-    inline bool stop()
-    {
-        if (!m_isOpen)
-            return false;
-
-        bool success = true;
-
-        if (m_hasVideo)
-            success &= m_videoPlayer->stop();
-
-        if (m_hasAudio)
-        {
-            m_audioPlayer->pause();
-            m_audioPlayer->cleanup();
-            m_hasAudio = m_audioPlayer->open(m_filepath);
-        }
-
-        m_isPlaying = false;
-        m_pausedTime = 0.0;
-        return success;
-    }
-
-    inline void update()
-    {
-        if (!m_isOpen)
-            return;
-
-        if (m_hasAudio && m_audioPlayer)
-        {
-            m_audioPlayer->decode_audio_frames();
-        }
-
-        if (m_hasVideo && m_videoPlayer)
-        {
-            m_videoPlayer->decode_frames(10);
-        }
-    }
-
-    inline uint8_t* grab_video_frame()
-    {
-        if (!m_hasVideo || !m_videoPlayer)
-            return nullptr;
-
-        double clock = get_playback_clock();
-
-        return m_videoPlayer->grab_frame_synced(clock);
-    }
-
-    inline double get_playback_clock() const
-    {
-        if (m_hasAudio && m_audioPlayer && m_audioPlayer->is_playing())
-        {
-            return m_audioPlayer->get_audio_clock();
-        }
-        else if (m_useSystemClock && m_isPlaying)
-        {
-            auto now = std::chrono::steady_clock::now();
-            return m_pausedTime + std::chrono::duration<double>(now - m_playbackStartTime).count();
-        }
-        
-        return m_pausedTime;
-    }
-
-    inline void cleanup()
-    {
-        if (m_videoPlayer)
-        {
-            m_videoPlayer->cleanup();
-            m_videoPlayer.reset();
-        }
-
-        if (m_audioPlayer)
-        {
-            m_audioPlayer->cleanup();
-            m_audioPlayer.reset();
-        }
-
-        m_isOpen = false;
-        m_isPlaying = false;
-        m_hasVideo = false;
-        m_hasAudio = false;
-    }
-    
-    public:
-    inline bool is_open() const
-    {
-        return m_isOpen;
-    }
-    inline bool is_playing() const
-    {
-        return m_isPlaying;
-    }
-    inline bool has_video() const
-    {
-        return m_hasVideo;
-    }
-    inline bool has_audio() const
-    {
-        return m_hasAudio;
-    }
-
-    inline bool is_end_of_file() const
-    {
-        bool videoEnded = !m_hasVideo || (m_videoPlayer && m_videoPlayer->is_end_of_file());
-        bool audioEnded = !m_hasAudio || (m_audioPlayer && m_audioPlayer->is_end_of_file());
-        return videoEnded && audioEnded;
-    }
-
-    inline int get_video_width() const
-    {
-        return m_hasVideo && m_videoPlayer ? m_videoPlayer->get_width() : 0;
-    }
-
-    inline int get_video_height() const
-    {
-        return m_hasVideo && m_videoPlayer ? m_videoPlayer->get_height() : 0;
-    }
-
-    inline int get_audio_sample_rate() const
-    {
-        return m_hasAudio && m_audioPlayer ? m_audioPlayer->get_sample_rate() : 0;
-    }
-
-    inline int get_audio_channels() const
-    {
-        return m_hasAudio && m_audioPlayer ? m_audioPlayer->get_channels() : 0;
-    }
-
-    inline size_t get_audio_buffer_size() const
-    {
-        return m_hasAudio && m_audioPlayer ? m_audioPlayer->get_buffer_size() : 0;
-    }
-
-    inline size_t get_video_queue_size() const
-    {
-        return m_hasVideo && m_videoPlayer ? m_videoPlayer->get_queue_size() : 0;
-    }
-
-    inline VideoPlayer* get_video_player() { return m_videoPlayer.get(); }
-    inline AudioPlayer* get_audio_player() { return m_audioPlayer.get(); }
-
-private:
-    std::filesystem::path m_filepath{};
-    std::unique_ptr<VideoPlayer> m_videoPlayer{};
-    std::unique_ptr<AudioPlayer> m_audioPlayer{};
-
-    bool m_isOpen{false};
-    bool m_isPlaying{false};
-    bool m_hasVideo{false};
-    bool m_hasAudio{false};
-    bool m_useSystemClock{false};
-
-    std::chrono::steady_clock::time_point m_playbackStartTime{};
-    double m_pausedTime{0.0};
+    std::atomic<double> audio_clock{0.0};
+    double video_clock = 0.0;
 };

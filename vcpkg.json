@@ -1,6 +1,13 @@
 {
   "dependencies": [
-    "ffmpeg",
+    {
+      "name": "ffmpeg",
+      "features": [
+        "avcodec",
+        "avformat",
+        "swresample"
+      ]
+    },
     "fmt",
     "glfw3",
     {
@@ -14,6 +21,6 @@
     "vulkan",
     "vulkan-headers",
     "vulkan-loader",
-    "portaudio"
+    "miniaudio"
   ]
 }
