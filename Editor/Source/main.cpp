@@ -9,7 +9,7 @@ constexpr static std::uint32_t HEIGHT{600};
 
 int main()
 {
-    Window window{WIDTH, HEIGHT, "Native C++ Media Player"};
+    Window window{WIDTH, HEIGHT, "GG"};
 
     if (auto code = get_error_code(window.init()); code != 0)
         return code;

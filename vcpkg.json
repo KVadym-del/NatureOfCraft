@@ -12,6 +12,7 @@
     "shaderc",
     "vulkan",
     "vulkan-headers",
-    "vulkan-loader"
+    "vulkan-loader",
+    "rapidobj"
   ]
 }
