@@ -1,5 +1,6 @@
 #pragma once
 #include "../../../Core/Public/Expected.hpp"
+#include "../../Public/Mesh.hpp"
 
 #include <array>
 #include <functional>
@@ -78,10 +79,21 @@ class NOC_EXPORT Vulkan
             return result;
         if (auto result = this->create_graphics_pipeline(); !result)
             return result;
+        if (auto result = this->create_depth_resources(); !result)
+            return result;
         if (auto result = this->create_framebuffers(); !result)
             return result;
         if (auto result = this->create_command_pool(); !result)
             return result;
+
+        auto meshResult = this->load_model("Resources/Mustang.obj");
+        if (!meshResult)
+        {
+            fmt::print("Failed to load model: {}\n", meshResult.error().message);
+            return make_error(meshResult.error());
+        }
+        m_myMesh = meshResult.value();
+
         if (auto result = this->create_command_buffers(); !result)
             return result;
         if (auto result = this->create_sync_objects(); !result)
@@ -112,9 +124,10 @@ class NOC_EXPORT Vulkan
                                                          const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
                                                          void* pUserData);
 
-    VkResult ceate_debug_utils_messenger_ext(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
-                                             const VkAllocationCallbacks* pAllocator,
-                                             VkDebugUtilsMessengerEXT* pDebugMessenger) noexcept;
+    VkResult create_debug_utils_messenger_ext(VkInstance instance,
+                                              const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
+                                              const VkAllocationCallbacks* pAllocator,
+                                              VkDebugUtilsMessengerEXT* pDebugMessenger) noexcept;
 
     void destroy_debug_utils_messenger_ext(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger,
                                            const VkAllocationCallbacks* pAllocator) noexcept;
@@ -166,15 +179,24 @@ class NOC_EXPORT Vulkan
 
     Result<> create_sync_objects();
 
-    // Media
-    Result<> init_video_texture(uint32_t width, uint32_t height);
-    void update_video_texture(const uint8_t* pixels);
+    Result<uint32_t> find_memory_type(uint32_t typeFilter, VkMemoryPropertyFlags properties);
 
-    uint32_t find_memory_type(uint32_t typeFilter, VkMemoryPropertyFlags properties);
+    Result<> create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
+                           VkBuffer& buffer, VkDeviceMemory& bufferMemory);
 
-    void create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer,
-                       VkDeviceMemory& bufferMemory);
+    Result<Mesh> load_model(std::string_view filename);
 
+    Result<> create_depth_resources();
+    Result<VkFormat> find_depth_format();
+    Result<VkFormat> find_supported_format(const std::vector<VkFormat>& candidates, VkImageTiling tiling,
+                                           VkFormatFeatureFlags features);
+    bool has_stencil_component(VkFormat format);
+    Result<> copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size);
+
+    Result<> create_image(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling,
+                          VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image,
+                          VkDeviceMemory& imageMemory);
+    Result<VkImageView> create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags);
 
   public:
     inline VkInstance get_instance() const noexcept
@@ -219,7 +241,8 @@ class NOC_EXPORT Vulkan
     }
     inline uint32_t get_graphics_queue_family_index() noexcept
     {
-        return find_queue_families(m_physicalDevice).graphicsFamily.value();
+        auto indices = find_queue_families(m_physicalDevice);
+        return indices.graphicsFamily.value_or(0);
     }
 
     using UIRenderCallback = std::function<void(VkCommandBuffer)>;
@@ -233,19 +256,10 @@ class NOC_EXPORT Vulkan
         return m_uiRenderCallback;
     }
 
-    VkDescriptorSet get_video_descriptor_set() const
+    using SwapchainRecreatedCallback = std::function<void()>;
+    inline void set_swapchain_recreated_callback(const SwapchainRecreatedCallback& cb) noexcept
     {
-        return m_videoDescriptorSet;
-    }
-
-    VkSampler get_video_sampler() const
-    {
-        return m_videoSampler;
-    }
-
-    VkImageView get_video_image_view() const
-    {
-        return m_videoImageView;
+        m_swapchainRecreatedCallback = cb;
     }
 
   private:
@@ -293,7 +307,7 @@ class NOC_EXPORT Vulkan
 
     std::vector<VkSemaphore> m_imageAvailableSemaphores{};
     std::vector<VkFence> m_inFlightFences{};
-    
+
     std::vector<VkSemaphore> m_renderFinishedSemaphores{};
     std::vector<VkFence> m_imagesInFlight{};
 
@@ -302,17 +316,13 @@ class NOC_EXPORT Vulkan
     uint32_t m_currentFrame{};
 
     UIRenderCallback m_uiRenderCallback{};
+    SwapchainRecreatedCallback m_swapchainRecreatedCallback{};
 
-    VkImage m_videoImage{};
-    VkDeviceMemory m_videoImageMemory{};
-    VkImageView m_videoImageView{};
-    VkSampler m_videoSampler{};
-    VkDescriptorSet m_videoDescriptorSet{};
+    Mesh m_myMesh{};
 
-    VkBuffer m_stagingBuffer{};
-    VkDeviceMemory m_stagingBufferMemory{};
-    uint32_t m_videoWidth{};
-    uint32_t m_videoHeight{};
+    VkImage m_depthImage{VK_NULL_HANDLE};
+    VkDeviceMemory m_depthImageMemory{VK_NULL_HANDLE};
+    VkImageView m_depthImageView{VK_NULL_HANDLE};
 };
 
 NOC_RESTORE_DLL_WARNINGS

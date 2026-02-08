@@ -38,6 +38,13 @@ enum class ErrorCode
     VulkanCommandBufferRecordingFailed,
     VulkanSyncObjectsCreationFailed,
     VulkanDrawFrameFailed,
+    VulkanBufferCreationFailed,
+    VulkanMemoryAllocationFailed,
+    VulkanImageCreationFailed,
+    VulkanDepthResourceCreationFailed,
+    VulkanFormatNotSupported,
+    VulkanCopyBufferFailed,
+    VulkanMemoryTypeMissing,
 };
 
 struct Error

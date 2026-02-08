@@ -65,3 +65,15 @@ add_custom_command(TARGET Editor POST_BUILD
         $<TARGET_FILE_DIR:Editor>
     COMMENT "Copying Source.dll to Editor output directory"
 )
+
+file(GLOB MODEL_FILES "${CMAKE_CURRENT_SOURCE_DIR}/Resources/*.obj")
+
+foreach(MODEL ${MODEL_FILES})
+    get_filename_component(MODEL_NAME ${MODEL} NAME)
+    add_custom_command(TARGET Editor POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${MODEL}
+            $<TARGET_FILE_DIR:Editor>/Resources/${MODEL_NAME}
+        COMMENT "Copying ${MODEL_NAME} to output directory"
+    )
+endforeach()

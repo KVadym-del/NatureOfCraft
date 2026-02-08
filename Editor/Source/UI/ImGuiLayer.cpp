@@ -91,6 +91,8 @@ bool InitializeImGuiForVulkan(Vulkan& vulkan, GLFWwindow* window)
     vulkan.set_ui_render_callback(
         [](VkCommandBuffer cmd) { ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd); });
 
+    vulkan.set_swapchain_recreated_callback([&vulkan]() { OnSwapchainRecreated(vulkan); });
+
     g_ImGuiInitialized = true;
     return true;
 }
@@ -119,6 +121,7 @@ void Shutdown(Vulkan& vulkan)
         return;
 
     vulkan.set_ui_render_callback(Vulkan::UIRenderCallback{});
+    vulkan.set_swapchain_recreated_callback(Vulkan::SwapchainRecreatedCallback{});
 
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplGlfw_Shutdown();

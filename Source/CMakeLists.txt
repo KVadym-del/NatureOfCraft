@@ -1,5 +1,5 @@
 ﻿set(CoreFiles "./Core/Public/Core.hpp" "./Core/Public/Expected.hpp" "./Core/Public/Utils.hpp") 
-set(RenderingFiles "./Rendering/BackEnds/Private/Vulkan.cpp" "./Rendering/BackEnds/Public/Vulkan.hpp") 
+set(RenderingFiles "./Rendering/BackEnds/Private/Vulkan.cpp" "./Rendering/BackEnds/Public/Vulkan.hpp" "./Rendering/Public/Mesh.hpp") 
 set(WindowFiles "./Window/Private/Window.cpp" "./Window/Public/Window.hpp") 
 
 if(MSVC)
@@ -11,6 +11,8 @@ find_package(glfw3 CONFIG REQUIRED)
 find_package(VulkanHeaders CONFIG)
 find_package(Vulkan REQUIRED)
 find_package(imgui CONFIG REQUIRED)
+find_package(RapidObj CONFIG REQUIRED)
+find_package(directxmath CONFIG REQUIRED)
 
 add_library (Source 
 	SHARED
@@ -28,4 +30,6 @@ target_link_libraries(Source PUBLIC glfw)
 target_link_libraries(Source PUBLIC Vulkan::Headers)
 target_link_libraries(Source PUBLIC Vulkan::Vulkan)
 target_link_libraries(Source PUBLIC imgui::imgui)
+target_link_libraries(Source PUBLIC rapidobj::rapidobj)
+target_link_libraries(Source PUBLIC Microsoft::DirectXMath)
 

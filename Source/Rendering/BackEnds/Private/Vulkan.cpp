@@ -3,55 +3,73 @@
 #endif
 
 #include "../Public/Vulkan.hpp"
-
 #include "../../../Core/Public/Utils.hpp"
+#include "../../Public/Mesh.hpp"
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <print>
 #include <set>
+#include <unordered_map>
 #include <vector>
-#include <algorithm>
 
 #include <GLFW/glfw3.h>
 
 #include <imgui_impl_vulkan.h>
 
+#include <rapidobj/rapidobj.hpp>
+
+#include <DirectXMath.h>
+using namespace DirectX;
+
+namespace std
+{
+template <> struct hash<Vertex>
+{
+    size_t operator()(Vertex const& vertex) const
+    {
+        size_t h1 =
+            hash<float>()(vertex.pos.x) ^ (hash<float>()(vertex.pos.y) << 1) ^ (hash<float>()(vertex.pos.z) << 2);
+        size_t h2 = hash<float>()(vertex.normal.x) ^ (hash<float>()(vertex.normal.y) << 1) ^
+                    (hash<float>()(vertex.normal.z) << 2);
+        size_t h3 = hash<float>()(vertex.texCoord.x) ^ (hash<float>()(vertex.texCoord.y) << 1);
+        return h1 ^ (h2 << 1) ^ (h3 << 1);
+    }
+};
+} // namespace std
+
 /// Public methods
 
 Result<> Vulkan::draw_frame() noexcept
 {
-    vkWaitForFences(this->m_device, 1, &this->m_inFlightFences[m_currentFrame], true,
-                    std::numeric_limits<uint64_t>::max());
+    vkWaitForFences(this->m_device, 1, &this->m_inFlightFences[m_currentFrame], true, UINT64_MAX);
 
     uint32_t imageIndex{};
-    VkResult result = vkAcquireNextImageKHR(this->m_device, this->m_swapChain, std::numeric_limits<uint64_t>::max(),
-                                            this->m_imageAvailableSemaphores[m_currentFrame], nullptr, &imageIndex);
+    VkResult result =
+        vkAcquireNextImageKHR(this->m_device, this->m_swapChain, UINT64_MAX,
+                              this->m_imageAvailableSemaphores[m_currentFrame], VK_NULL_HANDLE, &imageIndex);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR)
     {
-        if (auto result = recreate_swap_chain(); !result)
-            return result;
-        return {};
+        return recreate_swap_chain();
     }
     else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
     {
         return make_error("Failed to acquire swap chain image", ErrorCode::VulkanDrawFrameFailed);
     }
 
-    // Wait for the image to be available (if a previous frame is using it)
-    if (m_imagesInFlight[imageIndex] != VK_NULL_HANDLE)
+    if (vkResetFences(this->m_device, 1, &this->m_inFlightFences[m_currentFrame]) != VK_SUCCESS)
     {
-        vkWaitForFences(this->m_device, 1, &m_imagesInFlight[imageIndex], true,
-                        std::numeric_limits<uint64_t>::max());
+        return make_error("Failed to reset fence", ErrorCode::VulkanDrawFrameFailed);
     }
-    // Mark the image as now being in use by this frame
-    m_imagesInFlight[imageIndex] = m_inFlightFences[m_currentFrame];
 
-    vkResetFences(this->m_device, 1, &this->m_inFlightFences[m_currentFrame]);
-
-    vkResetCommandBuffer(this->m_commandBuffers[m_currentFrame], 0);
+    if (vkResetCommandBuffer(this->m_commandBuffers[m_currentFrame], 0) != VK_SUCCESS)
+    {
+        return make_error("Failed to reset command buffer", ErrorCode::VulkanDrawFrameFailed);
+    }
 
     auto recordResult = this->record_command_buffer(this->m_commandBuffers[m_currentFrame], imageIndex);
     if (!recordResult)
@@ -60,23 +78,18 @@ Result<> Vulkan::draw_frame() noexcept
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-    std::array<VkSemaphore, 1> waitSemaphores{
-        this->m_imageAvailableSemaphores[m_currentFrame],
-    };
-    std::array<VkPipelineStageFlags, 1> waitStages{
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-    };
+    VkSemaphore waitSemaphores[] = {this->m_imageAvailableSemaphores[m_currentFrame]};
+    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
     submitInfo.waitSemaphoreCount = 1;
-    submitInfo.pWaitSemaphores = waitSemaphores.data();
-    submitInfo.pWaitDstStageMask = waitStages.data();
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &this->m_commandBuffers[m_currentFrame];
 
-    std::array<VkSemaphore, 1> signalSemaphores{
-        this->m_renderFinishedSemaphores[imageIndex],
-    };
+    VkSemaphore signalSemaphores[] = {this->m_renderFinishedSemaphores[imageIndex]};
     submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = signalSemaphores.data();
+    submitInfo.pSignalSemaphores = signalSemaphores;
 
     if (vkQueueSubmit(this->m_graphicsQueue, 1, &submitInfo, this->m_inFlightFences[m_currentFrame]) != VK_SUCCESS)
     {
@@ -87,25 +100,19 @@ Result<> Vulkan::draw_frame() noexcept
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 
     presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = signalSemaphores.data();
+    presentInfo.pWaitSemaphores = signalSemaphores;
 
-    std::array<VkSwapchainKHR, 1> swapChains{
-        this->m_swapChain,
-    };
+    VkSwapchainKHR swapChains[] = {this->m_swapChain};
     presentInfo.swapchainCount = 1;
-    presentInfo.pSwapchains = swapChains.data();
+    presentInfo.pSwapchains = swapChains;
     presentInfo.pImageIndices = &imageIndex;
-
-    presentInfo.pResults = nullptr;
 
     result = vkQueuePresentKHR(this->m_presentQueue, &presentInfo);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || m_framebufferResized)
     {
         m_framebufferResized = false;
-        if (auto result = recreate_swap_chain(); !result)
-            return result;
-        return {};
+        return recreate_swap_chain();
     }
     else if (result != VK_SUCCESS)
     {
@@ -127,36 +134,20 @@ void Vulkan::cleanup() noexcept
     if (this->m_device)
         vkDeviceWaitIdle(this->m_device);
 
-    if (m_videoSampler)
+    if (m_myMesh.indexBuffer != VK_NULL_HANDLE)
     {
-        vkDestroySampler(m_device, m_videoSampler, nullptr);
-        m_videoSampler = VK_NULL_HANDLE;
+        vkDestroyBuffer(m_device, m_myMesh.indexBuffer, nullptr);
+        vkFreeMemory(m_device, m_myMesh.indexBufferMemory, nullptr);
     }
-    if (m_videoImageView)
+
+    if (m_myMesh.vertexBuffer != VK_NULL_HANDLE)
     {
-        vkDestroyImageView(m_device, m_videoImageView, nullptr);
-        m_videoImageView = VK_NULL_HANDLE;
+        vkDestroyBuffer(m_device, m_myMesh.vertexBuffer, nullptr);
+        vkFreeMemory(m_device, m_myMesh.vertexBufferMemory, nullptr);
     }
-    if (m_videoImage)
-    {
-        vkDestroyImage(m_device, m_videoImage, nullptr);
-        m_videoImage = VK_NULL_HANDLE;
-    }
-    if (m_videoImageMemory)
-    {
-        vkFreeMemory(m_device, m_videoImageMemory, nullptr);
-        m_videoImageMemory = VK_NULL_HANDLE;
-    }
-    if (m_stagingBuffer)
-    {
-        vkDestroyBuffer(m_device, m_stagingBuffer, nullptr);
-        m_stagingBuffer = VK_NULL_HANDLE;
-    }
-    if (m_stagingBufferMemory)
-    {
-        vkFreeMemory(m_device, m_stagingBufferMemory, nullptr);
-        m_stagingBufferMemory = VK_NULL_HANDLE;
-    }
+    // ----------------------------------
+
+    // Depth resources are destroyed in cleanup_swap_chain()
 
     cleanup_swap_chain();
 
@@ -172,11 +163,11 @@ void Vulkan::cleanup() noexcept
     }
 
     vkDestroyCommandPool(this->m_device, this->m_commandPool, nullptr);
-    
+
     vkDestroyPipeline(this->m_device, this->m_graphicsPipeline, nullptr);
     vkDestroyPipelineLayout(this->m_device, this->m_pipelineLayout, nullptr);
     vkDestroyRenderPass(this->m_device, this->m_renderPass, nullptr);
-    
+
     vkDestroyDevice(this->m_device, nullptr);
 
     if (this->m_enableValidationLayers)
@@ -185,9 +176,9 @@ void Vulkan::cleanup() noexcept
     }
 
     vkDestroySurfaceKHR(this->m_instance, this->m_surface, nullptr);
-    
+
     vkDestroyInstance(this->m_instance, nullptr);
-   }
+}
 
 /// Private methods
 
@@ -207,7 +198,7 @@ Result<> Vulkan::setup_debug_messenger()
     VkDebugUtilsMessengerCreateInfoEXT createInfo{};
     populate_debug_messenger_create_info(createInfo);
 
-    if (this->ceate_debug_utils_messenger_ext(this->m_instance, &createInfo, nullptr, &this->m_debugMessenger) !=
+    if (this->create_debug_utils_messenger_ext(this->m_instance, &createInfo, nullptr, &this->m_debugMessenger) !=
         VK_SUCCESS)
     {
         return make_error("Failed to set up debug messenger", ErrorCode::VulkanDebugMessengerCreationFailed);
@@ -285,10 +276,10 @@ VKAPI_ATTR uint32_t VKAPI_CALL Vulkan::debug_callback(VkDebugUtilsMessageSeverit
     return VK_FALSE;
 }
 
-VkResult Vulkan::ceate_debug_utils_messenger_ext(VkInstance instance,
-                                                 const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
-                                                 const VkAllocationCallbacks* pAllocator,
-                                                 VkDebugUtilsMessengerEXT* pDebugMessenger) noexcept
+VkResult Vulkan::create_debug_utils_messenger_ext(VkInstance instance,
+                                                  const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
+                                                  const VkAllocationCallbacks* pAllocator,
+                                                  VkDebugUtilsMessengerEXT* pDebugMessenger) noexcept
 {
     auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
     if (func != nullptr)
@@ -679,6 +670,22 @@ Result<> Vulkan::create_swap_chain()
 
 void Vulkan::cleanup_swap_chain()
 {
+    if (m_depthImageView != VK_NULL_HANDLE)
+    {
+        vkDestroyImageView(m_device, m_depthImageView, nullptr);
+        m_depthImageView = VK_NULL_HANDLE;
+    }
+    if (m_depthImage != VK_NULL_HANDLE)
+    {
+        vkDestroyImage(m_device, m_depthImage, nullptr);
+        m_depthImage = VK_NULL_HANDLE;
+    }
+    if (m_depthImageMemory != VK_NULL_HANDLE)
+    {
+        vkFreeMemory(m_device, m_depthImageMemory, nullptr);
+        m_depthImageMemory = VK_NULL_HANDLE;
+    }
+
     for (auto& framebuffer : this->m_swapChainFramebuffers)
     {
         if (framebuffer != VK_NULL_HANDLE)
@@ -733,6 +740,10 @@ Result<> Vulkan::recreate_swap_chain()
         return result;
     if (auto result = this->create_image_views(); !result)
         return result;
+
+    if (auto result = this->create_depth_resources(); !result)
+        return result;
+
     if (auto result = this->create_framebuffers(); !result)
         return result;
 
@@ -751,6 +762,12 @@ Result<> Vulkan::recreate_swap_chain()
             return make_error("Failed to recreate render finished semaphore",
                               ErrorCode::VulkanSyncObjectsCreationFailed);
         }
+    }
+
+    // Notify listeners (e.g., ImGui) about the swapchain recreation
+    if (m_swapchainRecreatedCallback)
+    {
+        m_swapchainRecreatedCallback();
     }
 
     return {};
@@ -788,6 +805,7 @@ Result<> Vulkan::create_image_views()
 
 Result<> Vulkan::create_graphics_pipeline()
 {
+    // 1. Load Shaders
     auto vertShaderCodeResult = read_file("Resources/vert.spv");
     if (!vertShaderCodeResult)
         return make_error(vertShaderCodeResult.error());
@@ -825,12 +843,16 @@ Result<> Vulkan::create_graphics_pipeline()
         fragShaderStageInfo,
     };
 
+    // 2. [FIX] Vertex Input State (Connects your Mesh to the Pipeline)
+    auto bindingDescription = Vertex::getBindingDescription();
+    auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputInfo.vertexBindingDescriptionCount = 0;
-    vertexInputInfo.pVertexBindingDescriptions = nullptr; // Optional
-    vertexInputInfo.vertexAttributeDescriptionCount = 0;
-    vertexInputInfo.pVertexAttributeDescriptions = nullptr; // Optional
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription; // <--- ADDED
+    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data(); // <--- ADDED
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -849,42 +871,33 @@ Result<> Vulkan::create_graphics_pipeline()
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
     rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer.depthBiasEnable = false;
-    rasterizer.depthBiasConstantFactor = 0.0f; // Optional
-    rasterizer.depthBiasClamp = 0.0f;          // Optional
-    rasterizer.depthBiasSlopeFactor = 0.0f;    // Optional
 
     VkPipelineMultisampleStateCreateInfo multisampling{};
     multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     multisampling.sampleShadingEnable = false;
     multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    multisampling.minSampleShading = 1.0f;       // Optional
-    multisampling.pSampleMask = nullptr;         // Optional
-    multisampling.alphaToCoverageEnable = false; // Optional
-    multisampling.alphaToOneEnable = false;      // Optional
+
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
 
     VkPipelineColorBlendAttachmentState colorBlendAttachment{};
     colorBlendAttachment.colorWriteMask =
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     colorBlendAttachment.blendEnable = false;
-    colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;  // Optional
-    colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO; // Optional
-    colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;             // Optional
-    colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;  // Optional
-    colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO; // Optional
-    colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;             // Optional
 
     VkPipelineColorBlendStateCreateInfo colorBlending{};
     colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     colorBlending.logicOpEnable = false;
-    colorBlending.logicOp = VK_LOGIC_OP_COPY; // Optional
+    colorBlending.logicOp = VK_LOGIC_OP_COPY;
     colorBlending.attachmentCount = 1;
     colorBlending.pAttachments = &colorBlendAttachment;
-    colorBlending.blendConstants[0] = 0.0f; // Optional
-    colorBlending.blendConstants[1] = 0.0f; // Optional
-    colorBlending.blendConstants[2] = 0.0f; // Optional
-    colorBlending.blendConstants[3] = 0.0f; // Optional
 
     std::array<VkDynamicState, 2> dynamicStates{
         VK_DYNAMIC_STATE_VIEWPORT,
@@ -896,15 +909,22 @@ Result<> Vulkan::create_graphics_pipeline()
     dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
     dynamicState.pDynamicStates = dynamicStates.data();
 
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(XMFLOAT4X4);
+
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 0;            // Optional
-    pipelineLayoutInfo.pSetLayouts = nullptr;         // Optional
-    pipelineLayoutInfo.pushConstantRangeCount = 0;    // Optional
-    pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional
+    pipelineLayoutInfo.setLayoutCount = 0;
+    pipelineLayoutInfo.pSetLayouts = nullptr;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;              
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
     if (vkCreatePipelineLayout(this->m_device, &pipelineLayoutInfo, nullptr, &this->m_pipelineLayout) != VK_SUCCESS)
     {
+        vkDestroyShaderModule(this->m_device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(this->m_device, vertShaderModule, nullptr);
         return make_error("Failed to create pipeline layout", ErrorCode::VulkanGraphicsPipelineLayoutCreationFailed);
     }
 
@@ -917,18 +937,20 @@ Result<> Vulkan::create_graphics_pipeline()
     pipelineInfo.pViewportState = &viewportState;
     pipelineInfo.pRasterizationState = &rasterizer;
     pipelineInfo.pMultisampleState = &multisampling;
-    pipelineInfo.pDepthStencilState = nullptr; // Optional
+    pipelineInfo.pDepthStencilState = &depthStencil;
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = this->m_pipelineLayout;
     pipelineInfo.renderPass = this->m_renderPass;
     pipelineInfo.subpass = 0;
-    pipelineInfo.basePipelineHandle = nullptr; // Optional
-    pipelineInfo.basePipelineIndex = -1;       // Optional
+    pipelineInfo.basePipelineHandle = nullptr;
+    pipelineInfo.basePipelineIndex = -1;
 
     if (vkCreateGraphicsPipelines(this->m_device, nullptr, 1, &pipelineInfo, nullptr, &this->m_graphicsPipeline) !=
         VK_SUCCESS)
     {
+        vkDestroyShaderModule(this->m_device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(this->m_device, vertShaderModule, nullptr);
         return make_error("Failed to create graphics pipeline", ErrorCode::VulkanGraphicsPipelineCreationFailed);
     }
 
@@ -965,27 +987,49 @@ Result<> Vulkan::create_render_pass()
     colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
+    VkAttachmentDescription depthAttachment{};
+    auto depthFormatResult = find_depth_format();
+    if (!depthFormatResult)
+        return make_error(depthFormatResult.error());
+    depthAttachment.format = depthFormatResult.value();
+    depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
     VkAttachmentReference colorAttachmentRef{};
     colorAttachmentRef.attachment = 0;
     colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference depthAttachmentRef{};
+    depthAttachmentRef.attachment = 1;
+    depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &colorAttachmentRef;
+    subpass.pDepthStencilAttachment = &depthAttachmentRef;
 
     VkSubpassDependency dependency{};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
     dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcStageMask =
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     dependency.srcAccessMask = 0;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependency.dstStageMask =
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    std::array<VkAttachmentDescription, 2> attachments = {colorAttachment, depthAttachment};
 
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassInfo.attachmentCount = 1;
-    renderPassInfo.pAttachments = &colorAttachment;
+    renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+    renderPassInfo.pAttachments = attachments.data();
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
     renderPassInfo.dependencyCount = 1;
@@ -1004,13 +1048,13 @@ Result<> Vulkan::create_framebuffers()
     this->m_swapChainFramebuffers.resize(this->m_swapChainImageViews.size());
     for (size_t i = 0; i < this->m_swapChainImageViews.size(); i++)
     {
-        VkImageView attachments[] = {this->m_swapChainImageViews[i]};
+        std::array<VkImageView, 2> attachments = {this->m_swapChainImageViews[i], m_depthImageView};
 
         VkFramebufferCreateInfo framebufferInfo{};
         framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         framebufferInfo.renderPass = this->m_renderPass;
-        framebufferInfo.attachmentCount = 1;
-        framebufferInfo.pAttachments = attachments;
+        framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+        framebufferInfo.pAttachments = attachments.data();
         framebufferInfo.width = this->m_swapChainExtent.width;
         framebufferInfo.height = this->m_swapChainExtent.height;
         framebufferInfo.layers = 1;
@@ -1062,8 +1106,6 @@ Result<> Vulkan::record_command_buffer(VkCommandBuffer commandBuffer, uint32_t i
 {
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = 0;                  // Optional
-    beginInfo.pInheritanceInfo = nullptr; // Optional
 
     if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
     {
@@ -1077,11 +1119,15 @@ Result<> Vulkan::record_command_buffer(VkCommandBuffer commandBuffer, uint32_t i
     renderPassInfo.renderArea.offset = {0, 0};
     renderPassInfo.renderArea.extent = this->m_swapChainExtent;
 
-    VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
-    renderPassInfo.clearValueCount = 1;
-    renderPassInfo.pClearValues = &clearColor;
+    std::array<VkClearValue, 2> clearValues{};
+    clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+    clearValues[1].depthStencil = {1.0f, 0};
+
+    renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+    renderPassInfo.pClearValues = clearValues.data();
 
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->m_graphicsPipeline);
 
     VkViewport viewport{};
@@ -1098,13 +1144,48 @@ Result<> Vulkan::record_command_buffer(VkCommandBuffer commandBuffer, uint32_t i
     scissor.extent = this->m_swapChainExtent;
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-    vkCmdDraw(commandBuffer, 6, 1, 0, 0);
+    static auto startTime = std::chrono::high_resolution_clock::now();
+    auto currentTime = std::chrono::high_resolution_clock::now();
+    float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
 
-    // Call optional UI render callback (e.g., ImGui Vulkan backend)
+    // Rotate around Y axis for turntable effect
+    XMMATRIX model = XMMatrixRotationY(time * 0.5f);
+
+    // Position
+    XMVECTOR eyePos = XMVectorSet(0.0f, 3.0f, 10.0f, 0.0f);
+    XMVECTOR focusPos = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    XMVECTOR upDir = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    XMMATRIX view = XMMatrixLookAtRH(eyePos, focusPos, upDir);
+
+    // Projection
+    float aspectRatio = this->m_swapChainExtent.width / (float)this->m_swapChainExtent.height;
+    XMMATRIX proj = XMMatrixPerspectiveFovRH(XMConvertToRadians(45.0f), aspectRatio, 0.1f, 1000.0f);
+
+    // Vulkan Clip Space (Y-flip)
+    XMMATRIX vulkanFix = XMMatrixScaling(1.0f, -1.0f, 1.0f);
+    proj = XMMatrixMultiply(proj, vulkanFix);
+
+    // Calculate MVP (Row-Major for DX, interpreted as Transpose by GLSL)
+    XMMATRIX mvp = XMMatrixMultiply(model, view);
+    mvp = XMMatrixMultiply(mvp, proj);
+
+    XMFLOAT4X4 mvpData;
+    XMStoreFloat4x4(&mvpData, mvp);
+
+    vkCmdPushConstants(commandBuffer, this->m_pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(XMFLOAT4X4),
+                       &mvpData);
+
+    VkBuffer vertexBuffers[] = {this->m_myMesh.vertexBuffer};
+    VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+
+    vkCmdBindIndexBuffer(commandBuffer, this->m_myMesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+
+    vkCmdDrawIndexed(commandBuffer, this->m_myMesh.indexCount, 1, 0, 0, 0);
+
+    if (this->get_ui_render_callback())
     {
-        const auto& uiCb = this->get_ui_render_callback();
-        if (uiCb)
-            uiCb(commandBuffer);
+        this->get_ui_render_callback()(commandBuffer);
     }
 
     vkCmdEndRenderPass(commandBuffer);
@@ -1121,7 +1202,7 @@ Result<> Vulkan::create_sync_objects()
 {
     m_imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
     m_inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
-    
+
     m_renderFinishedSemaphores.resize(m_swapChainImages.size());
     m_imagesInFlight.resize(m_swapChainImages.size(), VK_NULL_HANDLE);
 
@@ -1146,17 +1227,16 @@ Result<> Vulkan::create_sync_objects()
     for (size_t i = 0; i < m_swapChainImages.size(); i++)
     {
         if (vkCreateSemaphore(this->m_device, &semaphoreInfo, nullptr, &this->m_renderFinishedSemaphores[i]) !=
-                VK_SUCCESS)
+            VK_SUCCESS)
         {
-            return make_error("Failed to create render finished semaphore",
-                              ErrorCode::VulkanSyncObjectsCreationFailed);
+            return make_error("Failed to create render finished semaphore", ErrorCode::VulkanSyncObjectsCreationFailed);
         }
     }
 
     return {};
 }
 
-uint32_t Vulkan::find_memory_type(uint32_t typeFilter, VkMemoryPropertyFlags properties)
+Result<uint32_t> Vulkan::find_memory_type(uint32_t typeFilter, VkMemoryPropertyFlags properties)
 {
     VkPhysicalDeviceMemoryProperties memProperties;
     vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memProperties);
@@ -1167,11 +1247,11 @@ uint32_t Vulkan::find_memory_type(uint32_t typeFilter, VkMemoryPropertyFlags pro
             return i;
         }
     }
-    return 0;
+    return make_error("Failed to find suitable memory type", ErrorCode::VulkanMemoryTypeMissing);
 }
 
-void Vulkan::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
-                           VkBuffer& buffer, VkDeviceMemory& bufferMemory)
+Result<> Vulkan::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
+                               VkBuffer& buffer, VkDeviceMemory& bufferMemory)
 {
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -1179,30 +1259,307 @@ void Vulkan::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemory
     bufferInfo.usage = usage;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    vkCreateBuffer(m_device, &bufferInfo, nullptr, &buffer);
+    if (vkCreateBuffer(m_device, &bufferInfo, nullptr, &buffer) != VK_SUCCESS)
+    {
+        return make_error("Failed to create buffer", ErrorCode::VulkanBufferCreationFailed);
+    }
 
     VkMemoryRequirements memRequirements;
     vkGetBufferMemoryRequirements(m_device, buffer, &memRequirements);
 
+    auto memTypeResult = find_memory_type(memRequirements.memoryTypeBits, properties);
+    if (!memTypeResult)
+    {
+        vkDestroyBuffer(m_device, buffer, nullptr);
+        buffer = VK_NULL_HANDLE;
+        return make_error(memTypeResult.error());
+    }
+
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = find_memory_type(memRequirements.memoryTypeBits, properties);
+    allocInfo.memoryTypeIndex = memTypeResult.value();
 
-    vkAllocateMemory(m_device, &allocInfo, nullptr, &bufferMemory);
-    vkBindBufferMemory(m_device, buffer, bufferMemory, 0);
+    if (vkAllocateMemory(m_device, &allocInfo, nullptr, &bufferMemory) != VK_SUCCESS)
+    {
+        vkDestroyBuffer(m_device, buffer, nullptr);
+        buffer = VK_NULL_HANDLE;
+        return make_error("Failed to allocate buffer memory", ErrorCode::VulkanMemoryAllocationFailed);
+    }
+
+    if (vkBindBufferMemory(m_device, buffer, bufferMemory, 0) != VK_SUCCESS)
+    {
+        vkFreeMemory(m_device, bufferMemory, nullptr);
+        vkDestroyBuffer(m_device, buffer, nullptr);
+        buffer = VK_NULL_HANDLE;
+        bufferMemory = VK_NULL_HANDLE;
+        return make_error("Failed to bind buffer memory", ErrorCode::VulkanBufferCreationFailed);
+    }
+
+    return {};
 }
 
-Result<> Vulkan::init_video_texture(uint32_t width, uint32_t height)
+Result<Mesh> Vulkan::load_model(std::string_view filename)
 {
-    m_videoWidth = width;
-    m_videoHeight = height;
-    VkDeviceSize imageSize = width * height * 4;
+    Mesh mesh{};
+    std::filesystem::path filePath(filename);
+    rapidobj::Result result =
+        rapidobj::ParseFile(filePath, rapidobj::MaterialLibrary::Default(rapidobj::Load::Optional));
+    if (result.error)
+        return make_error(result.error.code.message());
 
-    create_buffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, m_stagingBuffer,
-                  m_stagingBufferMemory);
+    std::vector<Vertex> vertices{};
+    std::vector<uint32_t> indices{};
+    std::unordered_map<Vertex, uint32_t> uniqueVertices{};
 
+    const auto& attrib = result.attributes;
+    const auto numPositions = attrib.positions.size() / 3;
+    const auto numTexCoords = attrib.texcoords.size() / 2;
+    const auto numNormals = attrib.normals.size() / 3;
+
+    auto makeVertex = [&](const rapidobj::Index& index) -> Vertex {
+        Vertex vertex{};
+
+        vertex.pos = {attrib.positions[3 * index.position_index + 0], attrib.positions[3 * index.position_index + 1],
+                      attrib.positions[3 * index.position_index + 2]};
+
+        if (index.texcoord_index >= 0 && static_cast<size_t>(index.texcoord_index) < numTexCoords)
+        {
+            vertex.texCoord = {attrib.texcoords[2 * index.texcoord_index + 0],
+                               1.0f - attrib.texcoords[2 * index.texcoord_index + 1]};
+        }
+
+        if (index.normal_index >= 0 && static_cast<size_t>(index.normal_index) < numNormals)
+        {
+            vertex.normal = {attrib.normals[3 * index.normal_index + 0], attrib.normals[3 * index.normal_index + 1],
+                             attrib.normals[3 * index.normal_index + 2]};
+        }
+        else
+        {
+            vertex.normal = {0.0f, 1.0f, 0.0f};
+        }
+
+        return vertex;
+    };
+
+    auto addVertex = [&](const Vertex& vertex) {
+        if (uniqueVertices.count(vertex) == 0)
+        {
+            uniqueVertices[vertex] = static_cast<uint32_t>(vertices.size());
+            vertices.push_back(vertex);
+        }
+        indices.push_back(uniqueVertices[vertex]);
+    };
+
+    for (const auto& shape : result.shapes)
+    {
+        size_t indexOffset = 0;
+        for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); ++f)
+        {
+            const auto numFaceVerts = static_cast<size_t>(shape.mesh.num_face_vertices[f]);
+
+            bool faceValid = numFaceVerts >= 3;
+            if (faceValid)
+            {
+                for (size_t v = 0; v < numFaceVerts; ++v)
+                {
+                    const auto& idx = shape.mesh.indices[indexOffset + v];
+                    if (idx.position_index < 0 || static_cast<size_t>(idx.position_index) >= numPositions)
+                    {
+                        faceValid = false;
+                        break;
+                    }
+                }
+            }
+
+            if (faceValid)
+            {
+                const Vertex v0 = makeVertex(shape.mesh.indices[indexOffset]);
+                for (size_t v = 1; v + 1 < numFaceVerts; ++v)
+                {
+                    const Vertex v1 = makeVertex(shape.mesh.indices[indexOffset + v]);
+                    const Vertex v2 = makeVertex(shape.mesh.indices[indexOffset + v + 1]);
+                    addVertex(v0);
+                    addVertex(v1);
+                    addVertex(v2);
+                }
+            }
+
+            indexOffset += numFaceVerts;
+        }
+    }
+
+    if (vertices.empty())
+        return make_error("Model has no valid vertices");
+
+    mesh.indexCount = static_cast<uint32_t>(indices.size());
+
+    VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+    VkBuffer stagingBuffer{};
+    VkDeviceMemory stagingBufferMemory{};
+
+    if (auto result = create_buffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                    stagingBuffer, stagingBufferMemory);
+        !result)
+        return make_error(result.error());
+
+    void* data{};
+    if (vkMapMemory(m_device, stagingBufferMemory, 0, bufferSize, 0, &data) != VK_SUCCESS)
+    {
+        vkDestroyBuffer(m_device, stagingBuffer, nullptr);
+        vkFreeMemory(m_device, stagingBufferMemory, nullptr);
+        return make_error("Failed to map vertex staging buffer memory", ErrorCode::VulkanMemoryAllocationFailed);
+    }
+    memcpy(data, vertices.data(), static_cast<size_t>(bufferSize));
+    vkUnmapMemory(m_device, stagingBufferMemory);
+
+    if (auto result = create_buffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mesh.vertexBuffer, mesh.vertexBufferMemory);
+        !result)
+    {
+        vkDestroyBuffer(m_device, stagingBuffer, nullptr);
+        vkFreeMemory(m_device, stagingBufferMemory, nullptr);
+        return make_error(result.error());
+    }
+
+    if (auto result = copy_buffer(stagingBuffer, mesh.vertexBuffer, bufferSize); !result)
+    {
+        vkDestroyBuffer(m_device, stagingBuffer, nullptr);
+        vkFreeMemory(m_device, stagingBufferMemory, nullptr);
+        return make_error(result.error());
+    }
+
+    vkDestroyBuffer(m_device, stagingBuffer, nullptr);
+    vkFreeMemory(m_device, stagingBufferMemory, nullptr);
+
+    VkDeviceSize indexBufferSize = sizeof(indices[0]) * indices.size();
+    if (auto result = create_buffer(indexBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                    stagingBuffer, stagingBufferMemory);
+        !result)
+        return make_error(result.error());
+
+    if (vkMapMemory(m_device, stagingBufferMemory, 0, indexBufferSize, 0, &data) != VK_SUCCESS)
+    {
+        vkDestroyBuffer(m_device, stagingBuffer, nullptr);
+        vkFreeMemory(m_device, stagingBufferMemory, nullptr);
+        return make_error("Failed to map index staging buffer memory", ErrorCode::VulkanMemoryAllocationFailed);
+    }
+    memcpy(data, indices.data(), (size_t)indexBufferSize);
+    vkUnmapMemory(m_device, stagingBufferMemory);
+
+    if (auto result =
+            create_buffer(indexBufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mesh.indexBuffer, mesh.indexBufferMemory);
+        !result)
+    {
+        vkDestroyBuffer(m_device, stagingBuffer, nullptr);
+        vkFreeMemory(m_device, stagingBufferMemory, nullptr);
+        return make_error(result.error());
+    }
+
+    if (auto result = copy_buffer(stagingBuffer, mesh.indexBuffer, indexBufferSize); !result)
+    {
+        vkDestroyBuffer(m_device, stagingBuffer, nullptr);
+        vkFreeMemory(m_device, stagingBufferMemory, nullptr);
+        return make_error(result.error());
+    }
+
+    vkDestroyBuffer(m_device, stagingBuffer, nullptr);
+    vkFreeMemory(m_device, stagingBufferMemory, nullptr);
+
+    return mesh;
+}
+
+Result<> Vulkan::copy_buffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
+{
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = m_commandPool;
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer;
+    if (vkAllocateCommandBuffers(m_device, &allocInfo, &commandBuffer) != VK_SUCCESS)
+    {
+        return make_error("Failed to allocate command buffer for copy", ErrorCode::VulkanCopyBufferFailed);
+    }
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
+    {
+        vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
+        return make_error("Failed to begin command buffer for copy", ErrorCode::VulkanCopyBufferFailed);
+    }
+
+    VkBufferCopy copyRegion{};
+    copyRegion.srcOffset = 0;
+    copyRegion.dstOffset = 0;
+    copyRegion.size = size;
+    vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+
+    if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
+    {
+        vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
+        return make_error("Failed to end command buffer for copy", ErrorCode::VulkanCopyBufferFailed);
+    }
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
+    {
+        vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
+        return make_error("Failed to submit copy command", ErrorCode::VulkanCopyBufferFailed);
+    }
+
+    vkQueueWaitIdle(m_graphicsQueue);
+
+    vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
+    return {};
+}
+
+Result<VkFormat> Vulkan::find_supported_format(const std::vector<VkFormat>& candidates, VkImageTiling tiling,
+                                               VkFormatFeatureFlags features)
+{
+    for (VkFormat format : candidates)
+    {
+        VkFormatProperties props;
+        vkGetPhysicalDeviceFormatProperties(m_physicalDevice, format, &props);
+
+        if (tiling == VK_IMAGE_TILING_LINEAR && (props.linearTilingFeatures & features) == features)
+        {
+            return format;
+        }
+        else if (tiling == VK_IMAGE_TILING_OPTIMAL && (props.optimalTilingFeatures & features) == features)
+        {
+            return format;
+        }
+    }
+    return make_error("Failed to find supported format", ErrorCode::VulkanFormatNotSupported);
+}
+
+Result<VkFormat> Vulkan::find_depth_format()
+{
+    return find_supported_format({VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT},
+                                 VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+}
+
+bool Vulkan::has_stencil_component(VkFormat format)
+{
+    return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
+}
+
+Result<> Vulkan::create_image(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling,
+                              VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image,
+                              VkDeviceMemory& imageMemory)
+{
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -1211,123 +1568,95 @@ Result<> Vulkan::init_video_texture(uint32_t width, uint32_t height)
     imageInfo.extent.depth = 1;
     imageInfo.mipLevels = 1;
     imageInfo.arrayLayers = 1;
-    imageInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
-    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.format = format;
+    imageInfo.tiling = tiling;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.usage = usage;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    if (vkCreateImage(m_device, &imageInfo, nullptr, &m_videoImage) != VK_SUCCESS)
-        return make_error("Failed to create video image");
+    if (vkCreateImage(m_device, &imageInfo, nullptr, &image) != VK_SUCCESS)
+    {
+        return make_error("Failed to create image", ErrorCode::VulkanImageCreationFailed);
+    }
 
-    VkMemoryRequirements memReqs;
-    vkGetImageMemoryRequirements(m_device, m_videoImage, &memReqs);
+    VkMemoryRequirements memRequirements;
+    vkGetImageMemoryRequirements(m_device, image, &memRequirements);
+
+    auto memTypeResult = find_memory_type(memRequirements.memoryTypeBits, properties);
+    if (!memTypeResult)
+    {
+        vkDestroyImage(m_device, image, nullptr);
+        image = VK_NULL_HANDLE;
+        return make_error(memTypeResult.error());
+    }
 
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memReqs.size;
-    allocInfo.memoryTypeIndex = find_memory_type(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = memTypeResult.value();
 
-    if (vkAllocateMemory(m_device, &allocInfo, nullptr, &m_videoImageMemory) != VK_SUCCESS)
-        return make_error("Failed to allocate video image memory");
+    if (vkAllocateMemory(m_device, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS)
+    {
+        vkDestroyImage(m_device, image, nullptr);
+        image = VK_NULL_HANDLE;
+        return make_error("Failed to allocate image memory", ErrorCode::VulkanMemoryAllocationFailed);
+    }
 
-    vkBindImageMemory(m_device, m_videoImage, m_videoImageMemory, 0);
+    if (vkBindImageMemory(m_device, image, imageMemory, 0) != VK_SUCCESS)
+    {
+        vkFreeMemory(m_device, imageMemory, nullptr);
+        vkDestroyImage(m_device, image, nullptr);
+        image = VK_NULL_HANDLE;
+        imageMemory = VK_NULL_HANDLE;
+        return make_error("Failed to bind image memory", ErrorCode::VulkanImageCreationFailed);
+    }
 
-    VkImageViewCreateInfo viewInfo{};
-    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = m_videoImage;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.layerCount = 1;
-
-    if (vkCreateImageView(m_device, &viewInfo, nullptr, &m_videoImageView) != VK_SUCCESS)
-        return make_error("Failed to create video image view");
-
-    VkSamplerCreateInfo samplerInfo{};
-    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = VK_FILTER_LINEAR;
-    samplerInfo.minFilter = VK_FILTER_LINEAR;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-
-    if (vkCreateSampler(m_device, &samplerInfo, nullptr, &m_videoSampler) != VK_SUCCESS)
-        return make_error("Failed to create video sampler");
     return {};
 }
 
-void Vulkan::update_video_texture(const uint8_t* pixels)
+Result<VkImageView> Vulkan::create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags)
 {
-    if (!pixels || m_stagingBufferMemory == VK_NULL_HANDLE)
-        return;
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = format;
+    viewInfo.subresourceRange.aspectMask = aspectFlags;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
 
-    VkDeviceSize imageSize = m_videoWidth * m_videoHeight * 4;
+    VkImageView imageView;
+    if (vkCreateImageView(m_device, &viewInfo, nullptr, &imageView) != VK_SUCCESS)
+    {
+        return make_error("Failed to create image view", ErrorCode::VulkanImageViewCreationFailed);
+    }
 
-    void* data;
-    vkMapMemory(m_device, m_stagingBufferMemory, 0, imageSize, 0, &data);
-    memcpy(data, pixels, static_cast<size_t>(imageSize));
-    vkUnmapMemory(m_device, m_stagingBufferMemory);
+    return imageView;
+}
 
-    VkCommandBufferAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandPool = m_commandPool;
-    allocInfo.commandBufferCount = 1;
+Result<> Vulkan::create_depth_resources()
+{
+    auto depthFormatResult = find_depth_format();
+    if (!depthFormatResult)
+        return make_error(depthFormatResult.error());
 
-    VkCommandBuffer commandBuffer;
-    vkAllocateCommandBuffers(m_device, &allocInfo, &commandBuffer);
+    VkFormat depthFormat = depthFormatResult.value();
 
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (auto result = create_image(m_swapChainExtent.width, m_swapChainExtent.height, depthFormat,
+                                   VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_depthImage, m_depthImageMemory);
+        !result)
+    {
+        return result;
+    }
 
-    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    auto imageViewResult = create_image_view(m_depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
+    if (!imageViewResult)
+        return make_error(imageViewResult.error());
 
-    VkImageMemoryBarrier barrier{};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = m_videoImage;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.layerCount = 1;
-    barrier.srcAccessMask = 0;
-    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
-                         nullptr, 0, nullptr, 1, &barrier);
-
-    VkBufferImageCopy region{};
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.imageSubresource.layerCount = 1;
-    region.imageExtent = {m_videoWidth, m_videoHeight, 1};
-
-    vkCmdCopyBufferToImage(commandBuffer, m_stagingBuffer, m_videoImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                           &region);
-
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
-                         nullptr, 0, nullptr, 1, &barrier);
-
-    vkEndCommandBuffer(commandBuffer);
-
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
-
-    vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(m_graphicsQueue);
-
-    vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
+    m_depthImageView = imageViewResult.value();
+    return {};
 }

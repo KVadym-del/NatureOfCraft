@@ -9,10 +9,11 @@
         "vulkan-binding"
       ]
     },
+    "rapidobj",
     "shaderc",
     "vulkan",
     "vulkan-headers",
     "vulkan-loader",
-    "rapidobj"
+    "directxmath"
   ]
 }
