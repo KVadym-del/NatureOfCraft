@@ -1,0 +1,66 @@
+namespace NatureOfCraft.Assets;
+
+/// Re-use the vector/vertex types from MeshAsset.fbs via include,
+/// but FlatBuffers doesn't allow cross-file struct reuse within the same
+/// namespace easily, so we duplicate the struct definitions here.
+
+struct MVec2 {
+    x: float;
+    y: float;
+}
+
+struct MVec3 {
+    x: float;
+    y: float;
+    z: float;
+}
+
+struct MVec4 {
+    x: float;
+    y: float;
+    z: float;
+    w: float;
+}
+
+struct MColor4 {
+    r: float;
+    g: float;
+    b: float;
+    a: float;
+}
+
+struct MVertexData {
+    position: MVec3;
+    normal: MVec3;
+    tex_coord: MVec2;
+    tangent: MVec4;
+}
+
+table SubMeshAsset {
+    name: string;
+    vertices: [MVertexData];
+    indices: [uint32];
+    bounds_min: MVec3;
+    bounds_max: MVec3;
+}
+
+table MaterialEntry {
+    name: string;
+    albedo_color: MColor4;
+    roughness: float = 0.5;
+    metallic: float = 0.0;
+    albedo_texture_path: string;   // project-relative path
+    normal_texture_path: string;   // project-relative path
+    roughness_texture_path: string;
+}
+
+table ModelAsset {
+    name: string;
+    source_path: string;
+    meshes: [SubMeshAsset];
+    materials: [MaterialEntry];
+    mesh_material_indices: [int32]; // meshes[i] uses materials[mesh_material_indices[i]]
+}
+
+root_type ModelAsset;
+file_identifier "MODL";

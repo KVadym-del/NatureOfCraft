@@ -3,8 +3,11 @@
 
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <unordered_map>
 
+#include <ModelAsset_generated.h>
+#include <flatbuffers/flatbuffers.h>
 #include <fmt/core.h>
 #include <rapidobj/rapidobj.hpp>
 
@@ -102,6 +105,21 @@ static void compute_tangents(MeshData& mesh)
 
 ModelLoader::result_type ModelLoader::operator()(std::string_view path) const
 {
+    // If the path is a .noc_model cache file, load from cache directly
+    std::filesystem::path filePath(path);
+    if (filePath.extension() == ".noc_model")
+    {
+        auto cached = read_cache(path);
+        if (cached)
+        {
+            fmt::print("Loaded model from cache: {}\n", path);
+            return std::move(cached.value());
+        }
+        fmt::print(stderr, "ModelLoader: failed to read cache '{}': {}\n", path, cached.error().message);
+        return nullptr;
+    }
+
+    // Otherwise parse from OBJ
     auto result = parse_model(path);
     if (!result)
     {
@@ -281,6 +299,194 @@ Result<std::shared_ptr<ModelData>> ModelLoader::parse_model(std::string_view pat
         return make_error("Model has no valid geometry", ErrorCode::AssetInvalidData);
 
     fmt::print("Loaded model '{}': {} meshes, {} materials\n", model->name, model->meshes.size(),
+               model->materials.size());
+
+    return model;
+}
+
+// ── Binary cache (.noc_model) ─────────────────────────────────────────
+
+namespace fb = NatureOfCraft::Assets;
+
+std::string ModelLoader::get_cache_path(std::string_view sourcePath)
+{
+    std::filesystem::path p(sourcePath);
+    p.replace_extension(".noc_model");
+    return p.string();
+}
+
+Result<> ModelLoader::write_cache(const ModelData& model, std::string_view cachePath)
+{
+    flatbuffers::FlatBufferBuilder fbb(4096);
+
+    // Serialize sub-meshes
+    std::vector<flatbuffers::Offset<fb::SubMeshAsset>> meshOffsets;
+    meshOffsets.reserve(model.meshes.size());
+
+    for (const auto& mesh : model.meshes)
+    {
+        // Convert vertices to FlatBuffer structs
+        std::vector<fb::MVertexData> fbVerts;
+        fbVerts.reserve(mesh.vertices.size());
+        for (const auto& v : mesh.vertices)
+        {
+            fbVerts.emplace_back(fb::MVec3(v.pos.x, v.pos.y, v.pos.z), fb::MVec3(v.normal.x, v.normal.y, v.normal.z),
+                                 fb::MVec2(v.texCoord.x, v.texCoord.y),
+                                 fb::MVec4(v.tangent.x, v.tangent.y, v.tangent.z, v.tangent.w));
+        }
+
+        fb::MVec3 bMin(mesh.boundsMin.x, mesh.boundsMin.y, mesh.boundsMin.z);
+        fb::MVec3 bMax(mesh.boundsMax.x, mesh.boundsMax.y, mesh.boundsMax.z);
+
+        meshOffsets.push_back(
+            fb::CreateSubMeshAssetDirect(fbb, mesh.name.c_str(), &fbVerts, &mesh.indices, &bMin, &bMax));
+    }
+
+    // Serialize materials
+    std::vector<flatbuffers::Offset<fb::MaterialEntry>> matOffsets;
+    matOffsets.reserve(model.materials.size());
+
+    for (const auto& mat : model.materials)
+    {
+        fb::MColor4 albedoCol(mat.albedoColor.x, mat.albedoColor.y, mat.albedoColor.z, mat.albedoColor.w);
+
+        matOffsets.push_back(fb::CreateMaterialEntryDirect(
+            fbb, mat.name.c_str(), &albedoCol, mat.roughness, mat.metallic,
+            mat.albedoTexturePath.empty() ? nullptr : mat.albedoTexturePath.c_str(),
+            mat.normalTexturePath.empty() ? nullptr : mat.normalTexturePath.c_str(),
+            mat.roughnessTexturePath.empty() ? nullptr : mat.roughnessTexturePath.c_str()));
+    }
+
+    // Build the top-level ModelAsset
+    auto asset = fb::CreateModelAssetDirect(fbb, model.name.c_str(), model.sourcePath.c_str(), &meshOffsets,
+                                            &matOffsets, &model.meshMaterialIndices);
+
+    fb::FinishModelAssetBuffer(fbb, asset);
+
+    // Write to disk
+    std::ofstream file(std::string(cachePath), std::ios::binary);
+    if (!file.is_open())
+        return make_error(fmt::format("Failed to open model cache for writing: {}", cachePath),
+                          ErrorCode::AssetCacheWriteFailed);
+
+    file.write(reinterpret_cast<const char*>(fbb.GetBufferPointer()), static_cast<std::streamsize>(fbb.GetSize()));
+    if (!file.good())
+        return make_error(fmt::format("Failed to write model cache: {}", cachePath), ErrorCode::AssetCacheWriteFailed);
+
+    return {};
+}
+
+Result<std::shared_ptr<ModelData>> ModelLoader::read_cache(std::string_view cachePath)
+{
+    std::ifstream file(std::string(cachePath), std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return make_error(fmt::format("Failed to open model cache: {}", cachePath), ErrorCode::AssetCacheReadFailed);
+
+    auto fileSize = file.tellg();
+    if (fileSize <= 0)
+        return make_error(fmt::format("Model cache file is empty: {}", cachePath), ErrorCode::AssetCacheReadFailed);
+
+    file.seekg(0, std::ios::beg);
+    std::vector<uint8_t> buffer(static_cast<size_t>(fileSize));
+    file.read(reinterpret_cast<char*>(buffer.data()), fileSize);
+
+    // Verify
+    flatbuffers::Verifier verifier(buffer.data(), buffer.size());
+    if (!fb::VerifyModelAssetBuffer(verifier))
+        return make_error(fmt::format("Model cache verification failed: {}", cachePath),
+                          ErrorCode::AssetCacheReadFailed);
+
+    const auto* asset = fb::GetModelAsset(buffer.data());
+    if (!asset)
+        return make_error(fmt::format("Failed to deserialize model cache: {}", cachePath),
+                          ErrorCode::AssetCacheReadFailed);
+
+    auto model = std::make_shared<ModelData>();
+
+    if (asset->name())
+        model->name = asset->name()->str();
+    if (asset->source_path())
+        model->sourcePath = asset->source_path()->str();
+
+    // Deserialize materials
+    if (asset->materials())
+    {
+        model->materials.reserve(asset->materials()->size());
+        for (const auto* matEntry : *asset->materials())
+        {
+            MaterialData mat;
+            if (matEntry->name())
+                mat.name = matEntry->name()->str();
+
+            if (matEntry->albedo_color())
+            {
+                const auto& c = *matEntry->albedo_color();
+                mat.albedoColor = {c.r(), c.g(), c.b(), c.a()};
+            }
+
+            mat.roughness = matEntry->roughness();
+            mat.metallic = matEntry->metallic();
+
+            if (matEntry->albedo_texture_path())
+                mat.albedoTexturePath = matEntry->albedo_texture_path()->str();
+            if (matEntry->normal_texture_path())
+                mat.normalTexturePath = matEntry->normal_texture_path()->str();
+            if (matEntry->roughness_texture_path())
+                mat.roughnessTexturePath = matEntry->roughness_texture_path()->str();
+
+            model->materials.push_back(std::move(mat));
+        }
+    }
+
+    // Deserialize meshes
+    if (asset->meshes())
+    {
+        model->meshes.reserve(asset->meshes()->size());
+        for (const auto* subMesh : *asset->meshes())
+        {
+            MeshData meshData;
+            if (subMesh->name())
+                meshData.name = subMesh->name()->str();
+
+            if (subMesh->vertices())
+            {
+                meshData.vertices.reserve(subMesh->vertices()->size());
+                for (const auto* v : *subMesh->vertices())
+                {
+                    Vertex vert{};
+                    vert.pos = {v->position().x(), v->position().y(), v->position().z()};
+                    vert.normal = {v->normal().x(), v->normal().y(), v->normal().z()};
+                    vert.texCoord = {v->tex_coord().x(), v->tex_coord().y()};
+                    vert.tangent = {v->tangent().x(), v->tangent().y(), v->tangent().z(), v->tangent().w()};
+                    meshData.vertices.push_back(vert);
+                }
+            }
+
+            if (subMesh->indices())
+            {
+                const auto* idxVec = subMesh->indices();
+                meshData.indices.assign(idxVec->begin(), idxVec->end());
+            }
+
+            if (subMesh->bounds_min())
+                meshData.boundsMin = {subMesh->bounds_min()->x(), subMesh->bounds_min()->y(),
+                                      subMesh->bounds_min()->z()};
+            if (subMesh->bounds_max())
+                meshData.boundsMax = {subMesh->bounds_max()->x(), subMesh->bounds_max()->y(),
+                                      subMesh->bounds_max()->z()};
+
+            model->meshes.push_back(std::move(meshData));
+        }
+    }
+
+    // Deserialize mesh-material indices
+    if (asset->mesh_material_indices())
+    {
+        const auto* indices = asset->mesh_material_indices();
+        model->meshMaterialIndices.assign(indices->begin(), indices->end());
+    }
+
+    fmt::print("Loaded model from cache '{}': {} meshes, {} materials\n", model->name, model->meshes.size(),
                model->materials.size());
 
     return model;

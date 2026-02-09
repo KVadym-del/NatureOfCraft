@@ -1,0 +1,67 @@
+namespace NatureOfCraft.Level;
+
+// ── Inlined math types (avoids cross-schema include issues) ─────────
+
+struct Vec3 {
+    x: float;
+    y: float;
+    z: float;
+}
+
+struct Vec4 {
+    x: float;
+    y: float;
+    z: float;
+    w: float;
+}
+
+// ── Transform ───────────────────────────────────────────────────────
+
+table TransformData {
+    position: Vec3;
+    rotation: Vec4;   // quaternion (x, y, z, w)
+    scale: Vec3;
+}
+
+// ── Component data ──────────────────────────────────────────────────
+
+table MeshComponentData {
+    mesh_index: int32 = -1;
+    material_index: int32 = 0;
+    asset_path: string;
+}
+
+table CameraComponentData {
+    fov: float = 45.0;
+    near_plane: float = 0.1;
+    far_plane: float = 1000.0;
+    is_active: bool = false;
+    target: Vec3;
+    distance: float = 10.0;
+    yaw: float = 0.0;
+    pitch: float = 0.0;
+}
+
+// ── Entity ──────────────────────────────────────────────────────────
+
+table EntityData {
+    name: string;
+    transform: TransformData;
+    mesh: MeshComponentData;         // null if entity has no mesh
+    camera: CameraComponentData;     // null if entity has no camera
+    children: [EntityData];          // recursive hierarchy
+}
+
+// ── Level root ──────────────────────────────────────────────────────
+
+table LevelAsset {
+    name: string;
+    version: uint32 = 1;
+    root_entities: [EntityData];
+    // Referenced asset paths (textures, models) — not embedded.
+    // The loader resolves these from the project's asset directory.
+    referenced_assets: [string];
+}
+
+root_type LevelAsset;
+file_identifier "LEVL";

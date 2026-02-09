@@ -1,59 +1,56 @@
 #pragma once
 #include "../../Core/Public/Core.hpp"
+#include "../../ECS/Public/Components.hpp"
 
 #include <DirectXMath.h>
 
+#include <entt/entity/registry.hpp>
+
 NOC_SUPPRESS_DLL_WARNINGS
 
-class NOC_EXPORT OrbitCamera
+/// Controller that drives an orbit camera by reading/writing the CameraComponent
+/// on a given entity. The orbit state (target, distance, yaw, pitch, fov, planes)
+/// lives in the CameraComponent so it can be serialized with the level.
+/// The controller only owns transient tuning parameters (speeds, limits).
+class NOC_EXPORT OrbitCameraController
 {
   public:
-    OrbitCamera() = default;
+    OrbitCameraController() = default;
 
-    OrbitCamera(const DirectX::XMFLOAT3& target, float distance, float yawDegrees, float pitchDegrees)
-        : m_target(target), m_distance(distance), m_yaw(DirectX::XMConvertToRadians(yawDegrees)),
-          m_pitch(DirectX::XMConvertToRadians(pitchDegrees))
-    {}
+    /// Attach the controller to a specific camera entity in the given registry.
+    /// The entity must already have a CameraComponent.
+    void attach(entt::registry& registry, entt::entity cameraEntity) noexcept;
+
+    /// Detach from the current entity.
+    void detach() noexcept;
+
+    /// Returns true if the controller is attached to a valid entity.
+    bool is_attached() const noexcept;
+
+    // ── Input actions ─────────────────────────────────────────────────
 
     /// Rotates the camera around the target by delta pixels/units.
-    /// Deltas are scaled internally by m_rotationSpeed.
     void rotate(float deltaYaw, float deltaPitch) noexcept;
 
-    /// Zooms the camera by adjusting the distance to the target.
-    /// Positive delta zooms in, negative zooms out.
+    /// Zooms by adjusting the distance to the target.
     void zoom(float delta) noexcept;
 
     /// Pans the camera target in the view-local right/up plane.
-    /// Deltas are scaled internally by m_panSpeed.
     void pan(float deltaRight, float deltaUp) noexcept;
 
-    /// Returns the view matrix (right-handed).
+    // ── Matrix computation ────────────────────────────────────────────
+
+    /// Returns the view matrix (right-handed look-at).
     DirectX::XMMATRIX get_view_matrix() const noexcept;
 
-    /// Returns the projection matrix (right-handed, with Vulkan Y-flip applied).
+    /// Returns the projection matrix (right-handed perspective, Vulkan Y-flip applied).
     DirectX::XMMATRIX get_projection_matrix(float aspectRatio) const noexcept;
 
     /// Returns the world-space eye position.
     DirectX::XMFLOAT3 get_eye_position() const noexcept;
 
-  public:
-    void set_target(const DirectX::XMFLOAT3& target) noexcept
-    {
-        m_target = target;
-    }
-    void set_distance(float distance) noexcept;
-    void set_fov_degrees(float fovDegrees) noexcept
-    {
-        m_fov = DirectX::XMConvertToRadians(fovDegrees);
-    }
-    void set_near_plane(float nearPlane) noexcept
-    {
-        m_nearPlane = nearPlane;
-    }
-    void set_far_plane(float farPlane) noexcept
-    {
-        m_farPlane = farPlane;
-    }
+    // ── Tuning parameters ─────────────────────────────────────────────
+
     void set_rotation_speed(float speed) noexcept
     {
         m_rotationSpeed = speed;
@@ -67,34 +64,6 @@ class NOC_EXPORT OrbitCamera
         m_panSpeed = speed;
     }
 
-    const DirectX::XMFLOAT3& get_target() const noexcept
-    {
-        return m_target;
-    }
-    float get_distance() const noexcept
-    {
-        return m_distance;
-    }
-    float get_fov_degrees() const noexcept
-    {
-        return DirectX::XMConvertToDegrees(m_fov);
-    }
-    float get_yaw() const noexcept
-    {
-        return m_yaw;
-    }
-    float get_pitch() const noexcept
-    {
-        return m_pitch;
-    }
-    float get_near_plane() const noexcept
-    {
-        return m_nearPlane;
-    }
-    float get_far_plane() const noexcept
-    {
-        return m_farPlane;
-    }
     float get_rotation_speed() const noexcept
     {
         return m_rotationSpeed;
@@ -109,15 +78,12 @@ class NOC_EXPORT OrbitCamera
     }
 
   private:
-    DirectX::XMFLOAT3 m_target{0.0f, 1.0f, 0.0f};
-    float m_distance{10.0f};
+    /// Returns the CameraComponent on the attached entity. UB if not attached.
+    CameraComponent& get_component() noexcept;
+    const CameraComponent& get_component() const noexcept;
 
-    float m_yaw{0.0f};
-    float m_pitch{0.0f};
-
-    float m_fov{DirectX::XMConvertToRadians(45.0f)};
-    float m_nearPlane{0.1f};
-    float m_farPlane{1000.0f};
+    entt::registry* m_registry{nullptr};
+    entt::entity m_entity{entt::null};
 
     float m_rotationSpeed{0.005f};
     float m_zoomSpeed{1.0f};

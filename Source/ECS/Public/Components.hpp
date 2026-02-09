@@ -1,10 +1,23 @@
 #pragma once
+#include "../../Core/Public/Core.hpp"
+
 #include <DirectXMath.h>
 #include <cmath>
+#include <cstdint>
+#include <string>
+#include <vector>
 
-/// A 3D transform: position, rotation (quaternion), and scale.
+#include <entt/entity/entity.hpp>
+
+/// Name identifier for an entity.
+struct NameComponent
+{
+    std::string name;
+};
+
+/// 3D transform: position, rotation (quaternion), and uniform/non-uniform scale.
 /// Computes a local matrix as S * R * T (scale, then rotate, then translate).
-struct Transform
+struct TransformComponent
 {
     DirectX::XMFLOAT3 position{0.0f, 0.0f, 0.0f};
     DirectX::XMFLOAT4 rotation{0.0f, 0.0f, 0.0f, 1.0f}; // quaternion (x, y, z, w) — identity
@@ -28,22 +41,17 @@ struct Transform
     }
 
     /// Returns rotation as Euler angles (in radians): pitch (X), yaw (Y), roll (Z).
-    /// Uses the quaternion-to-Euler decomposition (may lose information at gimbal lock).
     DirectX::XMFLOAT3 get_rotation_euler() const noexcept
     {
-        // Convert quaternion (x,y,z,w) to Euler angles (pitch, yaw, roll)
         float qx = rotation.x, qy = rotation.y, qz = rotation.z, qw = rotation.w;
 
-        // Pitch (X-axis rotation)
         float sinp = 2.0f * (qw * qx + qy * qz);
         float cosp = 1.0f - 2.0f * (qx * qx + qy * qy);
         float pitch = std::atan2(sinp, cosp);
 
-        // Yaw (Y-axis rotation)
         float siny = 2.0f * (qw * qy - qz * qx);
         float yaw = (std::abs(siny) >= 1.0f) ? std::copysign(DirectX::XM_PIDIV2, siny) : std::asin(siny);
 
-        // Roll (Z-axis rotation)
         float sinr = 2.0f * (qw * qz + qx * qy);
         float cosr = 1.0f - 2.0f * (qy * qy + qz * qz);
         float roll = std::atan2(sinr, cosr);
@@ -57,4 +65,42 @@ struct Transform
         using namespace DirectX;
         XMStoreFloat4(&rotation, XMQuaternionRotationAxis(XMLoadFloat3(&axis), angleRadians));
     }
+};
+
+/// Parent-child hierarchy relationship.
+/// Entities without a HierarchyComponent (or with parent == entt::null) are root-level.
+struct HierarchyComponent
+{
+    entt::entity parent{entt::null};
+    std::vector<entt::entity> children;
+};
+
+/// Mesh rendering component. Entities with this are visible geometry.
+struct MeshComponent
+{
+    int32_t meshIndex{-1};
+    int32_t materialIndex{0};
+    std::string assetPath; // original asset path, used for serialization
+};
+
+/// Camera component. The entity with isActive=true is the rendering camera.
+/// Stores orbit controller state directly so it can be serialized with the level.
+struct CameraComponent
+{
+    float fov{45.0f}; // degrees
+    float nearPlane{0.1f};
+    float farPlane{1000.0f};
+    bool isActive{false};
+
+    // Orbit camera state
+    DirectX::XMFLOAT3 target{0.0f, 1.0f, 0.0f};
+    float distance{10.0f};
+    float yaw{0.0f};   // radians
+    float pitch{0.0f}; // radians
+};
+
+/// Cached world matrix, recomputed each frame by World::update_world_matrices().
+struct WorldMatrixCache
+{
+    DirectX::XMFLOAT4X4 worldMatrix{};
 };

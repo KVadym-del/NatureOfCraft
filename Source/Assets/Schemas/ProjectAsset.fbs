@@ -1,0 +1,18 @@
+namespace NatureOfCraft.Project;
+
+/// A reference to a single level within the project.
+table LevelEntry {
+    name: string;
+    file_path: string;   // relative path to .noc_level file from project root
+}
+
+/// Project manifest — stored as .noc_project at the project root.
+table ProjectAsset {
+    name: string;
+    version: uint32 = 1;
+    levels: [LevelEntry];
+    asset_directory: string;  // relative path to shared asset folder (e.g. "Assets")
+}
+
+root_type ProjectAsset;
+file_identifier "PROJ";

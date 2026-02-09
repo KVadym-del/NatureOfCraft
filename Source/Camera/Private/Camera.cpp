@@ -5,29 +5,67 @@
 
 using namespace DirectX;
 
-void OrbitCamera::rotate(float deltaYaw, float deltaPitch) noexcept
+void OrbitCameraController::attach(entt::registry& registry, entt::entity cameraEntity) noexcept
 {
-    m_yaw += deltaYaw * m_rotationSpeed;
-    m_pitch = std::clamp(m_pitch + deltaPitch * m_rotationSpeed, -kMaxPitch, kMaxPitch);
+    m_registry = &registry;
+    m_entity = cameraEntity;
 }
 
-void OrbitCamera::zoom(float delta) noexcept
+void OrbitCameraController::detach() noexcept
 {
-    m_distance = std::clamp(m_distance - delta * m_zoomSpeed, kMinDistance, kMaxDistance);
+    m_registry = nullptr;
+    m_entity = entt::null;
 }
 
-void OrbitCamera::pan(float deltaRight, float deltaUp) noexcept
+bool OrbitCameraController::is_attached() const noexcept
 {
-    // Compute view-local right and up vectors from yaw/pitch
-    float cosP = std::cos(m_pitch);
-    float sinP = std::sin(m_pitch);
-    float cosY = std::cos(m_yaw);
-    float sinY = std::sin(m_yaw);
+    return m_registry != nullptr && m_entity != entt::null && m_registry->valid(m_entity);
+}
+
+CameraComponent& OrbitCameraController::get_component() noexcept
+{
+    return m_registry->get<CameraComponent>(m_entity);
+}
+
+const CameraComponent& OrbitCameraController::get_component() const noexcept
+{
+    return m_registry->get<CameraComponent>(m_entity);
+}
+
+void OrbitCameraController::rotate(float deltaYaw, float deltaPitch) noexcept
+{
+    if (!is_attached())
+        return;
+
+    auto& cam = get_component();
+    cam.yaw += deltaYaw * m_rotationSpeed;
+    cam.pitch = std::clamp(cam.pitch + deltaPitch * m_rotationSpeed, -kMaxPitch, kMaxPitch);
+}
+
+void OrbitCameraController::zoom(float delta) noexcept
+{
+    if (!is_attached())
+        return;
+
+    auto& cam = get_component();
+    cam.distance = std::clamp(cam.distance - delta * m_zoomSpeed, kMinDistance, kMaxDistance);
+}
+
+void OrbitCameraController::pan(float deltaRight, float deltaUp) noexcept
+{
+    if (!is_attached())
+        return;
+
+    auto& cam = get_component();
+
+    float cosP = std::cos(cam.pitch);
+    float sinP = std::sin(cam.pitch);
+    float cosY = std::cos(cam.yaw);
+    float sinY = std::sin(cam.yaw);
 
     // Forward direction (from target toward eye)
     XMFLOAT3 forward{cosP * sinY, sinP, cosP * cosY};
 
-    // World up
     XMVECTOR worldUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
     XMVECTOR fwd = XMLoadFloat3(&forward);
 
@@ -38,46 +76,57 @@ void OrbitCamera::pan(float deltaRight, float deltaUp) noexcept
     XMVECTOR up = XMVector3Cross(fwd, right);
 
     // Scale and apply to target
-    XMVECTOR target = XMLoadFloat3(&m_target);
+    XMVECTOR target = XMLoadFloat3(&cam.target);
     target = XMVectorAdd(target, XMVectorScale(right, -deltaRight * m_panSpeed));
     target = XMVectorAdd(target, XMVectorScale(up, deltaUp * m_panSpeed));
-    XMStoreFloat3(&m_target, target);
+    XMStoreFloat3(&cam.target, target);
 }
 
-DirectX::XMFLOAT3 OrbitCamera::get_eye_position() const noexcept
+XMFLOAT3 OrbitCameraController::get_eye_position() const noexcept
 {
-    float cosP = std::cos(m_pitch);
-    float sinP = std::sin(m_pitch);
-    float cosY = std::cos(m_yaw);
-    float sinY = std::sin(m_yaw);
+    if (!is_attached())
+        return {0.0f, 0.0f, 0.0f};
+
+    const auto& cam = get_component();
+
+    float cosP = std::cos(cam.pitch);
+    float sinP = std::sin(cam.pitch);
+    float cosY = std::cos(cam.yaw);
+    float sinY = std::sin(cam.yaw);
 
     XMFLOAT3 eye;
-    eye.x = m_target.x + cosP * sinY * m_distance;
-    eye.y = m_target.y + sinP * m_distance;
-    eye.z = m_target.z + cosP * cosY * m_distance;
+    eye.x = cam.target.x + cosP * sinY * cam.distance;
+    eye.y = cam.target.y + sinP * cam.distance;
+    eye.z = cam.target.z + cosP * cosY * cam.distance;
     return eye;
 }
 
-DirectX::XMMATRIX OrbitCamera::get_view_matrix() const noexcept
+XMMATRIX OrbitCameraController::get_view_matrix() const noexcept
 {
+    if (!is_attached())
+        return XMMatrixIdentity();
+
+    const auto& cam = get_component();
+
     XMFLOAT3 eye = get_eye_position();
     XMVECTOR eyeVec = XMLoadFloat3(&eye);
-    XMVECTOR targetVec = XMLoadFloat3(&m_target);
+    XMVECTOR targetVec = XMLoadFloat3(&cam.target);
     XMVECTOR upVec = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
     return XMMatrixLookAtRH(eyeVec, targetVec, upVec);
 }
 
-DirectX::XMMATRIX OrbitCamera::get_projection_matrix(float aspectRatio) const noexcept
+XMMATRIX OrbitCameraController::get_projection_matrix(float aspectRatio) const noexcept
 {
-    XMMATRIX proj = XMMatrixPerspectiveFovRH(m_fov, aspectRatio, m_nearPlane, m_farPlane);
+    if (!is_attached())
+        return XMMatrixIdentity();
+
+    const auto& cam = get_component();
+
+    float fovRadians = XMConvertToRadians(cam.fov);
+    XMMATRIX proj = XMMatrixPerspectiveFovRH(fovRadians, aspectRatio, cam.nearPlane, cam.farPlane);
 
     // Vulkan clip space Y-flip
     XMMATRIX vulkanFlip = XMMatrixScaling(1.0f, -1.0f, 1.0f);
     return XMMatrixMultiply(proj, vulkanFlip);
-}
-
-void OrbitCamera::set_distance(float distance) noexcept
-{
-    m_distance = std::clamp(distance, kMinDistance, kMaxDistance);
 }
