@@ -1,0 +1,30 @@
+namespace NatureOfCraft.Assets;
+
+struct Vec2 {
+    x: float;
+    y: float;
+}
+
+struct Vec3 {
+    x: float;
+    y: float;
+    z: float;
+}
+
+struct VertexData {
+    position: Vec3;
+    normal: Vec3;
+    tex_coord: Vec2;
+}
+
+table MeshAsset {
+    name: string;
+    source_path: string;
+    vertices: [VertexData];
+    indices: [uint32];
+    bounds_min: Vec3;
+    bounds_max: Vec3;
+}
+
+root_type MeshAsset;
+file_identifier "MESH";

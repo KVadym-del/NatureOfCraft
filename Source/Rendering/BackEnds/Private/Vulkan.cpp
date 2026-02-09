@@ -3,38 +3,20 @@
 #endif
 
 #include "../Public/Vulkan.hpp"
+#include "../../../Assets/Public/MeshData.hpp"
 #include "../../Public/Mesh.hpp"
 
 #include <array>
 #include <cstdint>
 #include <cstring>
-#include <unordered_map>
 #include <vector>
 
 #include <GLFW/glfw3.h>
 
 #include <imgui_impl_vulkan.h>
 
-#include <rapidobj/rapidobj.hpp>
-
 #include <DirectXMath.h>
 using namespace DirectX;
-
-namespace std
-{
-template <> struct hash<Vertex>
-{
-    size_t operator()(Vertex const& vertex) const
-    {
-        size_t h1 =
-            hash<float>()(vertex.pos.x) ^ (hash<float>()(vertex.pos.y) << 1) ^ (hash<float>()(vertex.pos.z) << 2);
-        size_t h2 = hash<float>()(vertex.normal.x) ^ (hash<float>()(vertex.normal.y) << 1) ^
-                    (hash<float>()(vertex.normal.z) << 2);
-        size_t h3 = hash<float>()(vertex.texCoord.x) ^ (hash<float>()(vertex.texCoord.y) << 1);
-        return h1 ^ (h2 << 1) ^ (h3 << 1);
-    }
-};
-} // namespace std
 
 /// Initialization
 
@@ -402,107 +384,19 @@ Result<> Vulkan::recreate_swap_chain()
     return {};
 }
 
-/// Model loading
+/// GPU mesh upload
 
-Result<uint32_t> Vulkan::load_model(std::string_view filename)
+Result<uint32_t> Vulkan::upload_mesh(const MeshData& meshData)
 {
+    if (meshData.vertices.empty())
+        return make_error("MeshData has no vertices", ErrorCode::AssetInvalidData);
+
     VkDevice device = m_vulkanDevice.get_device();
-
     Mesh mesh{};
-    std::filesystem::path filePath(filename);
-    rapidobj::Result result =
-        rapidobj::ParseFile(filePath, rapidobj::MaterialLibrary::Default(rapidobj::Load::Optional));
-    if (result.error)
-        return make_error(result.error.code.message());
-
-    std::vector<Vertex> vertices{};
-    std::vector<uint32_t> indices{};
-    std::unordered_map<Vertex, uint32_t> uniqueVertices{};
-
-    const auto& attrib = result.attributes;
-    const auto numPositions = attrib.positions.size() / 3;
-    const auto numTexCoords = attrib.texcoords.size() / 2;
-    const auto numNormals = attrib.normals.size() / 3;
-
-    auto makeVertex = [&](const rapidobj::Index& index) -> Vertex {
-        Vertex vertex{};
-
-        vertex.pos = {attrib.positions[3 * index.position_index + 0], attrib.positions[3 * index.position_index + 1],
-                      attrib.positions[3 * index.position_index + 2]};
-
-        if (index.texcoord_index >= 0 && static_cast<size_t>(index.texcoord_index) < numTexCoords)
-        {
-            vertex.texCoord = {attrib.texcoords[2 * index.texcoord_index + 0],
-                               1.0f - attrib.texcoords[2 * index.texcoord_index + 1]};
-        }
-
-        if (index.normal_index >= 0 && static_cast<size_t>(index.normal_index) < numNormals)
-        {
-            vertex.normal = {attrib.normals[3 * index.normal_index + 0], attrib.normals[3 * index.normal_index + 1],
-                             attrib.normals[3 * index.normal_index + 2]};
-        }
-        else
-        {
-            vertex.normal = {0.0f, 1.0f, 0.0f};
-        }
-
-        return vertex;
-    };
-
-    auto addVertex = [&](const Vertex& vertex) {
-        if (uniqueVertices.count(vertex) == 0)
-        {
-            uniqueVertices[vertex] = static_cast<uint32_t>(vertices.size());
-            vertices.push_back(vertex);
-        }
-        indices.push_back(uniqueVertices[vertex]);
-    };
-
-    for (const auto& shape : result.shapes)
-    {
-        size_t indexOffset = 0;
-        for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); ++f)
-        {
-            const auto numFaceVerts = static_cast<size_t>(shape.mesh.num_face_vertices[f]);
-
-            bool faceValid = numFaceVerts >= 3;
-            if (faceValid)
-            {
-                for (size_t v = 0; v < numFaceVerts; ++v)
-                {
-                    const auto& idx = shape.mesh.indices[indexOffset + v];
-                    if (idx.position_index < 0 || static_cast<size_t>(idx.position_index) >= numPositions)
-                    {
-                        faceValid = false;
-                        break;
-                    }
-                }
-            }
-
-            if (faceValid)
-            {
-                const Vertex v0 = makeVertex(shape.mesh.indices[indexOffset]);
-                for (size_t v = 1; v + 1 < numFaceVerts; ++v)
-                {
-                    const Vertex v1 = makeVertex(shape.mesh.indices[indexOffset + v]);
-                    const Vertex v2 = makeVertex(shape.mesh.indices[indexOffset + v + 1]);
-                    addVertex(v0);
-                    addVertex(v1);
-                    addVertex(v2);
-                }
-            }
-
-            indexOffset += numFaceVerts;
-        }
-    }
-
-    if (vertices.empty())
-        return make_error("Model has no valid vertices");
-
-    mesh.indexCount = static_cast<uint32_t>(indices.size());
+    mesh.indexCount = static_cast<uint32_t>(meshData.indices.size());
 
     // --- Vertex buffer ---
-    VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+    VkDeviceSize bufferSize = sizeof(meshData.vertices[0]) * meshData.vertices.size();
     VkBuffer stagingBuffer{};
     VkDeviceMemory stagingBufferMemory{};
 
@@ -520,7 +414,7 @@ Result<uint32_t> Vulkan::load_model(std::string_view filename)
         vkFreeMemory(device, stagingBufferMemory, nullptr);
         return make_error("Failed to map vertex staging buffer memory", ErrorCode::VulkanMemoryAllocationFailed);
     }
-    memcpy(data, vertices.data(), static_cast<size_t>(bufferSize));
+    memcpy(data, meshData.vertices.data(), static_cast<size_t>(bufferSize));
     vkUnmapMemory(device, stagingBufferMemory);
 
     if (auto res = m_vulkanDevice.create_buffer(
@@ -544,7 +438,7 @@ Result<uint32_t> Vulkan::load_model(std::string_view filename)
     vkFreeMemory(device, stagingBufferMemory, nullptr);
 
     // --- Index buffer ---
-    VkDeviceSize indexBufferSize = sizeof(indices[0]) * indices.size();
+    VkDeviceSize indexBufferSize = sizeof(meshData.indices[0]) * meshData.indices.size();
     if (auto res =
             m_vulkanDevice.create_buffer(indexBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -558,7 +452,7 @@ Result<uint32_t> Vulkan::load_model(std::string_view filename)
         vkFreeMemory(device, stagingBufferMemory, nullptr);
         return make_error("Failed to map index staging buffer memory", ErrorCode::VulkanMemoryAllocationFailed);
     }
-    memcpy(data, indices.data(), (size_t)indexBufferSize);
+    memcpy(data, meshData.indices.data(), static_cast<size_t>(indexBufferSize));
     vkUnmapMemory(device, stagingBufferMemory);
 
     if (auto res = m_vulkanDevice.create_buffer(

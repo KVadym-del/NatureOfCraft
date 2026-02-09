@@ -13,6 +13,8 @@
 #include <DirectXMath.h>
 #include <vulkan/vulkan.h>
 
+struct MeshData; // Forward declare — full definition in Assets/Public/MeshData.hpp
+
 constexpr const int32_t MAX_FRAMES_IN_FLIGHT{2};
 
 NOC_SUPPRESS_DLL_WARNINGS
@@ -36,7 +38,7 @@ class NOC_EXPORT Vulkan : public IRenderer
 
     void cleanup() noexcept;
 
-    Result<uint32_t> load_model(std::string_view filename) override;
+    Result<uint32_t> upload_mesh(const MeshData& meshData) override;
 
     // --- Delegating getters for ImGuiLayer and other consumers ---
     inline VkInstance get_instance() const noexcept

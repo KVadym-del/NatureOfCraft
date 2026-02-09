@@ -1,0 +1,25 @@
+namespace NatureOfCraft.Assets;
+
+enum TextureFormat : byte {
+    Unknown = 0,
+    R8,
+    RG8,
+    RGB8,
+    RGBA8,
+    R16F,
+    RGBA16F,
+    RGBA32F
+}
+
+table TextureAsset {
+    name: string;
+    source_path: string;
+    width: uint32;
+    height: uint32;
+    channels: uint32;
+    format: TextureFormat = RGBA8;
+    data: [ubyte];
+}
+
+root_type TextureAsset;
+file_identifier "TEXR";

@@ -1,4 +1,5 @@
 #include "UI/ImGuiLayer.hpp"
+#include <Assets/Public/AssetManager.hpp>
 #include <Camera/Public/Camera.hpp>
 #include <Rendering/BackEnds/Public/Vulkan.hpp>
 #include <Scene/Public/Scene.hpp>
@@ -34,14 +35,16 @@ int main()
     if (!Editor::UI::InitializeImGuiForVulkan(vulkan, window.get_glfw_window()))
         return -1;
 
-    // --- Scene setup: load model and build scene graph ---
-    auto meshResult = renderer.load_model("Resources/Mustang.obj");
-    if (!meshResult)
+    // --- Scene setup: load model via AssetManager and upload to GPU ---
+    AssetManager assetManager;
+    auto meshHandle = assetManager.load_mesh("Resources/Mustang.obj");
+    auto uploadResult = renderer.upload_mesh(*meshHandle);
+    if (!uploadResult)
     {
-        fmt::print("Failed to load model: {}\n", meshResult.error().message);
-        return static_cast<int>(meshResult.error().code);
+        fmt::print("Failed to upload mesh: {}\n", uploadResult.error().message);
+        return static_cast<int>(uploadResult.error().code);
     }
-    uint32_t mustangMeshIndex = meshResult.value();
+    uint32_t mustangMeshIndex = uploadResult.value();
 
     Scene scene;
     SceneNode* mustangNode = scene.get_root()->add_child("Mustang");

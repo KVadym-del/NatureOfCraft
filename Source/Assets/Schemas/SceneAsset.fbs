@@ -1,0 +1,36 @@
+namespace NatureOfCraft.Assets;
+
+struct Vec3 {
+    x: float;
+    y: float;
+    z: float;
+}
+
+struct Vec4 {
+    x: float;
+    y: float;
+    z: float;
+    w: float;
+}
+
+table TransformData {
+    position: Vec3;
+    rotation: Vec4;
+    scale: Vec3;
+}
+
+table SceneNodeData {
+    name: string;
+    transform: TransformData;
+    mesh_name: string;
+    material_name: string;
+    children: [SceneNodeData];
+}
+
+table SceneAsset {
+    name: string;
+    root_nodes: [SceneNodeData];
+}
+
+root_type SceneAsset;
+file_identifier "SCNE";

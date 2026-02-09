@@ -45,6 +45,13 @@ enum class ErrorCode
     VulkanFormatNotSupported,
     VulkanCopyBufferFailed,
     VulkanMemoryTypeMissing,
+
+    // Asset Errors
+    AssetFileNotFound = 300,
+    AssetParsingFailed,
+    AssetCacheWriteFailed,
+    AssetCacheReadFailed,
+    AssetInvalidData,
 };
 
 struct Error

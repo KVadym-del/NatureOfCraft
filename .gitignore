@@ -8,3 +8,5 @@ compile_commands.json
 .cache/
 
 *.obj
+
+/Source/Assets/Generated

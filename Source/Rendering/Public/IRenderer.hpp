@@ -3,10 +3,11 @@
 #include "Renderable.hpp"
 
 #include <cstdint>
-#include <string_view>
 #include <vector>
 
 #include <DirectXMath.h>
+
+struct MeshData; // Forward declare — full definition in Assets/Public/MeshData.hpp
 
 NOC_SUPPRESS_DLL_WARNINGS
 
@@ -26,8 +27,9 @@ class NOC_EXPORT IRenderer
     /// Block until all GPU work is finished. Call before shutdown.
     virtual void wait_idle() noexcept = 0;
 
-    /// Load a mesh from a file. Returns an opaque mesh index.
-    virtual Result<uint32_t> load_model(std::string_view filename) = 0;
+    /// Upload CPU-side mesh data to GPU buffers. Returns an opaque mesh index.
+    /// The MeshData must have been loaded via AssetManager beforehand.
+    virtual Result<uint32_t> upload_mesh(const MeshData& meshData) = 0;
 
     /// Set the view and projection matrices for this frame.
     virtual void set_view_projection(const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& proj) noexcept = 0;

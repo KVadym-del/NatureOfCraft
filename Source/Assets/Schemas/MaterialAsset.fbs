@@ -1,0 +1,21 @@
+namespace NatureOfCraft.Assets;
+
+struct Color4 {
+    r: float;
+    g: float;
+    b: float;
+    a: float;
+}
+
+table MaterialAsset {
+    name: string;
+    albedo_color: Color4;
+    roughness: float = 0.5;
+    metallic: float = 0.0;
+    albedo_texture_path: string;
+    normal_texture_path: string;
+    roughness_texture_path: string;
+}
+
+root_type MaterialAsset;
+file_identifier "MATL";
