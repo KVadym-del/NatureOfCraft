@@ -6,3 +6,5 @@ vcpkg_installed/
 compile_commands.json
 
 .cache/
+
+*.obj
