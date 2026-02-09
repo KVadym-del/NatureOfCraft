@@ -19,8 +19,8 @@ class NOC_EXPORT VulkanPipeline
     VulkanPipeline(const VulkanPipeline&) = delete;
     VulkanPipeline& operator=(const VulkanPipeline&) = delete;
 
-    /// Creates the graphics pipeline using the given render pass.
-    Result<> initialize(VkRenderPass renderPass);
+    /// Creates the graphics pipeline using the given render pass and MSAA sample count.
+    Result<> initialize(VkRenderPass renderPass, VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_1_BIT);
 
     /// Destroys pipeline and pipeline layout.
     void cleanup() noexcept;
@@ -34,6 +34,10 @@ class NOC_EXPORT VulkanPipeline
     {
         return m_pipelineLayout;
     }
+    inline VkDescriptorSetLayout get_descriptor_set_layout() const noexcept
+    {
+        return m_descriptorSetLayout;
+    }
 
   private:
     Result<VkShaderModule> create_shader_module(const std::vector<char>& code) noexcept;
@@ -43,6 +47,7 @@ class NOC_EXPORT VulkanPipeline
 
     VkPipeline m_graphicsPipeline{};
     VkPipelineLayout m_pipelineLayout{};
+    VkDescriptorSetLayout m_descriptorSetLayout{};
 };
 
 NOC_RESTORE_DLL_WARNINGS

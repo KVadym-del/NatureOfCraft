@@ -45,6 +45,10 @@ enum class ErrorCode
     VulkanFormatNotSupported,
     VulkanCopyBufferFailed,
     VulkanMemoryTypeMissing,
+    VulkanImageLayoutTransitionFailed,
+    VulkanCopyBufferToImageFailed,
+    VulkanSamplerCreationFailed,
+    VulkanTextureUploadFailed,
 
     // Asset Errors
     AssetFileNotFound = 300,

@@ -23,6 +23,7 @@ void Scene::collect_renderables_recursive(const SceneNode* node, const XMMATRIX&
         Renderable r{};
         XMStoreFloat4x4(&r.worldMatrix, worldMatrix);
         r.meshIndex = static_cast<uint32_t>(node->get_mesh_index());
+        r.materialIndex = static_cast<uint32_t>(node->get_material_index());
         out.push_back(r);
     }
 

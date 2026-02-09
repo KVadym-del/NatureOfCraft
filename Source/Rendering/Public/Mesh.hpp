@@ -15,6 +15,7 @@ struct Vertex
     XMFLOAT3 pos;
     XMFLOAT3 normal;
     XMFLOAT2 texCoord;
+    XMFLOAT4 tangent; // xyz = tangent direction, w = bitangent handedness (+1 or -1)
 
     static VkVertexInputBindingDescription getBindingDescription()
     {
@@ -25,9 +26,9 @@ struct Vertex
         return bindingDescription;
     }
 
-    static std::array<VkVertexInputAttributeDescription, 3> getAttributeDescriptions()
+    static std::array<VkVertexInputAttributeDescription, 4> getAttributeDescriptions()
     {
-        std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions{};
+        std::array<VkVertexInputAttributeDescription, 4> attributeDescriptions{};
 
         attributeDescriptions[0].binding = 0;
         attributeDescriptions[0].location = 0;
@@ -44,6 +45,11 @@ struct Vertex
         attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
         attributeDescriptions[2].offset = offsetof(Vertex, texCoord);
 
+        attributeDescriptions[3].binding = 0;
+        attributeDescriptions[3].location = 3;
+        attributeDescriptions[3].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        attributeDescriptions[3].offset = offsetof(Vertex, tangent);
+
         return attributeDescriptions;
     }
 
@@ -51,7 +57,8 @@ struct Vertex
     {
         return pos.x == other.pos.x && pos.y == other.pos.y && pos.z == other.pos.z && normal.x == other.normal.x &&
                normal.y == other.normal.y && normal.z == other.normal.z && texCoord.x == other.texCoord.x &&
-               texCoord.y == other.texCoord.y;
+               texCoord.y == other.texCoord.y && tangent.x == other.tangent.x && tangent.y == other.tangent.y &&
+               tangent.z == other.tangent.z && tangent.w == other.tangent.w;
     }
 };
 
@@ -62,4 +69,16 @@ struct Mesh
     VkBuffer indexBuffer{VK_NULL_HANDLE};
     VkDeviceMemory indexBufferMemory{VK_NULL_HANDLE};
     uint32_t indexCount{};
+};
+
+struct GpuTexture
+{
+    VkImage image{VK_NULL_HANDLE};
+    VkDeviceMemory memory{VK_NULL_HANDLE};
+    VkImageView imageView{VK_NULL_HANDLE};
+};
+
+struct GpuMaterial
+{
+    VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
 };

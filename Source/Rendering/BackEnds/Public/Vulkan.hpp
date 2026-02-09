@@ -8,14 +8,23 @@
 #include "VulkanSwapchain.hpp"
 
 #include <functional>
+#include <string>
 #include <vector>
 
 #include <DirectXMath.h>
 #include <vulkan/vulkan.h>
 
-struct MeshData; // Forward declare — full definition in Assets/Public/MeshData.hpp
+struct MeshData;    // Forward declare — full definition in Assets/Public/MeshData.hpp
+struct TextureData; // Forward declare — full definition in Assets/Public/TextureData.hpp
 
 constexpr const int32_t MAX_FRAMES_IN_FLIGHT{2};
+
+enum class KHR_Settings
+{
+    VSync,
+    Triple_Buffering,
+    Immediate,
+};
 
 NOC_SUPPRESS_DLL_WARNINGS
 
@@ -40,6 +49,10 @@ class NOC_EXPORT Vulkan : public IRenderer
 
     Result<uint32_t> upload_mesh(const MeshData& meshData) override;
 
+    Result<uint32_t> upload_texture(const TextureData& textureData) override;
+
+    Result<uint32_t> upload_material(uint32_t albedoTextureIndex, uint32_t normalTextureIndex) override;
+
     // --- Delegating getters for ImGuiLayer and other consumers ---
     inline VkInstance get_instance() const noexcept
     {
@@ -61,9 +74,10 @@ class NOC_EXPORT Vulkan : public IRenderer
     {
         return m_vulkanDevice.get_present_queue();
     }
-    inline VkRenderPass get_render_pass() const noexcept
+    /// Returns the UI render pass (used by ImGui).
+    inline VkRenderPass get_ui_render_pass() const noexcept
     {
-        return m_swapchain.get_render_pass();
+        return m_swapchain.get_ui_render_pass();
     }
     inline VkExtent2D get_swapchain_extent() const noexcept
     {
@@ -84,6 +98,46 @@ class NOC_EXPORT Vulkan : public IRenderer
     inline uint32_t get_graphics_queue_family_index() noexcept
     {
         return m_vulkanDevice.get_graphics_queue_family_index();
+    }
+
+    // --- Stats getters for overlay ---
+    inline std::string get_gpu_name() const noexcept
+    {
+        return m_vulkanDevice.get_gpu_name();
+    }
+    inline VkPresentModeKHR get_present_mode() const noexcept
+    {
+        return m_swapchain.get_present_mode();
+    }
+    inline VkFormat get_swapchain_format() const noexcept
+    {
+        return m_swapchain.get_format();
+    }
+    inline uint32_t get_mesh_count() const noexcept
+    {
+        return static_cast<uint32_t>(m_meshes.size());
+    }
+    inline uint32_t get_texture_count() const noexcept
+    {
+        return static_cast<uint32_t>(m_textures.size());
+    }
+    inline uint32_t get_material_count() const noexcept
+    {
+        return static_cast<uint32_t>(m_materials.size());
+    }
+    inline uint32_t get_renderable_count() const noexcept
+    {
+        return static_cast<uint32_t>(m_renderables.size());
+    }
+    uint32_t get_total_triangle_count() const noexcept
+    {
+        uint32_t total = 0;
+        for (const auto& renderable : m_renderables)
+        {
+            if (renderable.meshIndex < m_meshes.size())
+                total += m_meshes[renderable.meshIndex].indexCount / 3;
+        }
+        return total;
     }
 
     using UIRenderCallback = std::function<void(VkCommandBuffer)>;
@@ -127,18 +181,42 @@ class NOC_EXPORT Vulkan : public IRenderer
 
     uint32_t get_render_width() const noexcept override
     {
-        return m_swapchain.get_extent().width;
+        return m_sceneRenderWidth;
     }
     uint32_t get_render_height() const noexcept override
     {
-        return m_swapchain.get_extent().height;
+        return m_sceneRenderHeight;
     }
+
+    // --- Runtime settings (IRenderer overrides) ---
+    void set_vsync(KHR_Settings mode) noexcept override;
+    bool get_vsync() const noexcept override;
+    void set_msaa_samples(int samples) noexcept override;
+    int get_msaa_samples() const noexcept override;
+    void set_render_scale(float scale) noexcept override;
+    float get_render_scale() const noexcept override;
 
   private:
     Result<> create_command_buffers();
     Result<> record_command_buffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) noexcept;
     Result<> create_sync_objects();
     Result<> recreate_swap_chain();
+    Result<> create_sampler();
+    Result<> create_default_textures();
+    Result<> create_descriptor_pool();
+    Result<> create_default_material();
+
+    // --- Offscreen scene rendering ---
+    Result<> create_scene_render_pass();
+    Result<> create_scene_render_target();
+    void cleanup_scene_render_target();
+    void cleanup_scene_render_pass();
+    void compute_scene_render_size();
+    VkSampleCountFlagBits get_max_usable_sample_count() const noexcept;
+
+    Result<VkFormat> find_depth_format();
+    Result<VkFormat> find_supported_format(const std::vector<VkFormat>& candidates, VkImageTiling tiling,
+                                           VkFormatFeatureFlags features);
 
     // --- Sub-components ---
     VulkanDevice m_vulkanDevice;
@@ -164,8 +242,44 @@ class NOC_EXPORT Vulkan : public IRenderer
     std::vector<Mesh> m_meshes{};
     std::vector<Renderable> m_renderables{};
 
+    std::vector<GpuTexture> m_textures{};
+    VkSampler m_sampler{VK_NULL_HANDLE};
+    uint32_t m_defaultAlbedoTextureIndex{};
+    uint32_t m_defaultNormalTextureIndex{};
+
+    std::vector<GpuMaterial> m_materials{};
+    VkDescriptorPool m_descriptorPool{VK_NULL_HANDLE};
+    uint32_t m_defaultMaterialIndex{};
+
     DirectX::XMFLOAT4X4 m_viewMatrix{};
     DirectX::XMFLOAT4X4 m_projMatrix{};
+
+    // --- Offscreen scene render target ---
+    VkRenderPass m_sceneRenderPass{VK_NULL_HANDLE};
+    VkFramebuffer m_sceneFramebuffer{VK_NULL_HANDLE};
+
+    // Resolve/final color (always 1x sample) — blit source
+    VkImage m_sceneColorImage{VK_NULL_HANDLE};
+    VkDeviceMemory m_sceneColorMemory{VK_NULL_HANDLE};
+    VkImageView m_sceneColorView{VK_NULL_HANDLE};
+
+    // Depth (matches MSAA sample count)
+    VkImage m_sceneDepthImage{VK_NULL_HANDLE};
+    VkDeviceMemory m_sceneDepthMemory{VK_NULL_HANDLE};
+    VkImageView m_sceneDepthView{VK_NULL_HANDLE};
+
+    // MSAA color (only when msaaSamples > 1)
+    VkImage m_msaaColorImage{VK_NULL_HANDLE};
+    VkDeviceMemory m_msaaColorMemory{VK_NULL_HANDLE};
+    VkImageView m_msaaColorView{VK_NULL_HANDLE};
+
+    uint32_t m_sceneRenderWidth{0};
+    uint32_t m_sceneRenderHeight{0};
+
+    // --- Settings ---
+    float m_renderScale{1.0f};
+    VkSampleCountFlagBits m_msaaSamples{VK_SAMPLE_COUNT_1_BIT};
+    bool m_vsyncEnabled{false}; // Default: auto (mailbox preferred)
 };
 
 NOC_RESTORE_DLL_WARNINGS

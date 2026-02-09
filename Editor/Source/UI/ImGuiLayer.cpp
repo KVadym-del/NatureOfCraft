@@ -79,7 +79,7 @@ bool InitializeImGuiForVulkan(Vulkan& vulkan, GLFWwindow* window)
     init_info.Queue = vulkan.get_graphics_queue();
     init_info.PipelineCache = VK_NULL_HANDLE;
     init_info.DescriptorPool = g_ImGuiDescriptorPool;
-    init_info.RenderPass = vulkan.get_render_pass();
+    init_info.RenderPass = vulkan.get_ui_render_pass();
     init_info.Subpass = 0;
     init_info.MinImageCount = std::max<uint32_t>(2u, vulkan.get_swapchain_image_count());
     init_info.ImageCount = vulkan.get_swapchain_image_count();

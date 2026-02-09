@@ -7,7 +7,10 @@
 
 #include <DirectXMath.h>
 
-struct MeshData; // Forward declare — full definition in Assets/Public/MeshData.hpp
+struct MeshData;    // Forward declare — full definition in Assets/Public/MeshData.hpp
+struct TextureData; // Forward declare — full definition in Assets/Public/TextureData.hpp
+
+enum class KHR_Settings;
 
 NOC_SUPPRESS_DLL_WARNINGS
 
@@ -31,6 +34,14 @@ class NOC_EXPORT IRenderer
     /// The MeshData must have been loaded via AssetManager beforehand.
     virtual Result<uint32_t> upload_mesh(const MeshData& meshData) = 0;
 
+    /// Upload CPU-side texture data to GPU image. Returns an opaque texture index.
+    /// The TextureData must have been loaded via AssetManager beforehand.
+    virtual Result<uint32_t> upload_texture(const TextureData& textureData) = 0;
+
+    /// Create a GPU material from texture indices. Returns an opaque material index.
+    /// albedoTextureIndex and normalTextureIndex must be valid indices from upload_texture().
+    virtual Result<uint32_t> upload_material(uint32_t albedoTextureIndex, uint32_t normalTextureIndex) = 0;
+
     /// Set the view and projection matrices for this frame.
     virtual void set_view_projection(const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& proj) noexcept = 0;
 
@@ -45,6 +56,26 @@ class NOC_EXPORT IRenderer
 
     /// Returns the current render target height in pixels.
     virtual uint32_t get_render_height() const noexcept = 0;
+
+    // --- Runtime settings ---
+
+    /// Set VSync mode. true = FIFO (vsync on), false = IMMEDIATE or MAILBOX.
+    virtual void set_vsync(KHR_Settings mode) noexcept = 0;
+
+    /// Get current VSync state.
+    virtual bool get_vsync() const noexcept = 0;
+
+    /// Set MSAA sample count (1, 2, 4, 8). Clamped to device max.
+    virtual void set_msaa_samples(int samples) noexcept = 0;
+
+    /// Get current MSAA sample count.
+    virtual int get_msaa_samples() const noexcept = 0;
+
+    /// Set render resolution scale (0.25 to 2.0). 1.0 = native resolution.
+    virtual void set_render_scale(float scale) noexcept = 0;
+
+    /// Get current render resolution scale.
+    virtual float get_render_scale() const noexcept = 0;
 };
 
 NOC_RESTORE_DLL_WARNINGS

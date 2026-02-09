@@ -1,8 +1,11 @@
 #pragma once
 #include "../../Core/Public/Core.hpp"
 #include "../Private/MeshLoader.hpp"
+#include "../Private/ModelLoader.hpp"
+#include "../Private/TextureLoader.hpp"
 #include "MaterialData.hpp"
 #include "MeshData.hpp"
+#include "ModelData.hpp"
 #include "TextureData.hpp"
 
 #include <string_view>
@@ -59,13 +62,28 @@ class NOC_EXPORT AssetManager
     size_t material_count() const noexcept;
     void clear_materials() noexcept;
 
-    // --- Texture loading (data model ready, minimal implementation) ---
+    // --- Texture loading ---
 
+    /// Load a texture from an image file (PNG, JPG, TGA, etc.).
+    /// Forces RGBA8 output. Deduplicates by path.
+    entt::resource<TextureData> load_texture(std::string_view path);
+
+    /// Load a texture from pre-built data (e.g. programmatic textures).
     entt::resource<TextureData> load_texture(std::string_view name, const TextureData& data);
 
     bool contains_texture(std::string_view name) const;
     size_t texture_count() const noexcept;
     void clear_textures() noexcept;
+
+    // --- Model loading (OBJ + MTL, splits by material) ---
+
+    /// Load a complete model (OBJ + MTL). Splits geometry by material,
+    /// extracts texture paths, computes tangents per sub-mesh.
+    entt::resource<ModelData> load_model(std::string_view path);
+
+    bool contains_model(std::string_view path) const;
+    size_t model_count() const noexcept;
+    void clear_models() noexcept;
 
     // --- Async support ---
 
@@ -81,7 +99,8 @@ class NOC_EXPORT AssetManager
 
     entt::resource_cache<MeshData, MeshLoader> m_meshCache;
     entt::resource_cache<MaterialData> m_materialCache;
-    entt::resource_cache<TextureData> m_textureCache;
+    entt::resource_cache<TextureData, TextureLoader> m_textureCache;
+    entt::resource_cache<ModelData, ModelLoader> m_modelCache;
 
     tf::Executor m_executor;
 };

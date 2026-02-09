@@ -63,3 +63,20 @@ foreach(MODEL ${MODEL_FILES})
         COMMENT "Copying ${MODEL_NAME}"
     )
 endforeach()
+
+# Copy material and texture assets
+file(GLOB ASSET_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/Resources/*.mtl"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Resources/*.png"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Resources/*.jpg"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Resources/*.jpeg"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Resources/*.tga"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Resources/*.bmp"
+)
+foreach(ASSET ${ASSET_FILES})
+    get_filename_component(ASSET_NAME ${ASSET} NAME)
+    add_custom_command(TARGET Editor POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${ASSET} "$<TARGET_FILE_DIR:Editor>/Resources/${ASSET_NAME}"
+        COMMENT "Copying ${ASSET_NAME}"
+    )
+endforeach()

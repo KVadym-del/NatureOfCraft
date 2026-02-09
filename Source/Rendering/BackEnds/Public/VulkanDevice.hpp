@@ -3,6 +3,7 @@
 
 #include <array>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include <vulkan/vulkan.h>
@@ -70,9 +71,13 @@ class NOC_EXPORT VulkanDevice
 
     Result<> create_image(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling,
                           VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image,
-                          VkDeviceMemory& imageMemory);
+                          VkDeviceMemory& imageMemory, VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
 
     Result<VkImageView> create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags);
+
+    Result<> transition_image_layout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
+
+    Result<> copy_buffer_to_image(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
 
     // --- Getters ---
     inline VkInstance get_instance() const noexcept
@@ -111,6 +116,12 @@ class NOC_EXPORT VulkanDevice
     {
         auto indices = find_queue_families(m_physicalDevice);
         return indices.graphicsFamily.value_or(0);
+    }
+    inline std::string get_gpu_name() const noexcept
+    {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(m_physicalDevice, &properties);
+        return properties.deviceName;
     }
 
   private:

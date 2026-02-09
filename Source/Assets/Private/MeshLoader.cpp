@@ -2,6 +2,7 @@
 #include "../../Rendering/Public/Mesh.hpp"
 #include "../Public/MeshData.hpp"
 
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -23,7 +24,9 @@ template <> struct hash<Vertex>
         size_t h2 = hash<float>()(vertex.normal.x) ^ (hash<float>()(vertex.normal.y) << 1) ^
                     (hash<float>()(vertex.normal.z) << 2);
         size_t h3 = hash<float>()(vertex.texCoord.x) ^ (hash<float>()(vertex.texCoord.y) << 1);
-        return h1 ^ (h2 << 1) ^ (h3 << 1);
+        size_t h4 = hash<float>()(vertex.tangent.x) ^ (hash<float>()(vertex.tangent.y) << 1) ^
+                    (hash<float>()(vertex.tangent.z) << 2) ^ (hash<float>()(vertex.tangent.w) << 3);
+        return h1 ^ (h2 << 1) ^ (h3 << 1) ^ (h4 << 2);
     }
 };
 } // namespace std
@@ -183,6 +186,97 @@ Result<std::shared_ptr<MeshData>> MeshLoader::parse_obj(std::string_view path)
     mesh->indices = std::move(indices);
     mesh->compute_bounds();
 
+    // Compute tangent vectors from UV triangle derivatives.
+    // Accumulate per-vertex tangent and bitangent, then Gram-Schmidt orthogonalize
+    // tangent against normal and derive handedness from the bitangent direction.
+    {
+        auto& verts = mesh->vertices;
+        const auto& idxs = mesh->indices;
+        const size_t vertCount = verts.size();
+
+        // Temporary accumulators for tangent (T) and bitangent (B) directions
+        std::vector<XMFLOAT3> tanAccum(vertCount, {0.0f, 0.0f, 0.0f});
+        std::vector<XMFLOAT3> bitanAccum(vertCount, {0.0f, 0.0f, 0.0f});
+
+        // Accumulate per-triangle tangent/bitangent
+        for (size_t i = 0; i + 2 < idxs.size(); i += 3)
+        {
+            uint32_t i0 = idxs[i + 0];
+            uint32_t i1 = idxs[i + 1];
+            uint32_t i2 = idxs[i + 2];
+            const auto& v0 = verts[i0];
+            const auto& v1 = verts[i1];
+            const auto& v2 = verts[i2];
+
+            float dx1 = v1.pos.x - v0.pos.x;
+            float dy1 = v1.pos.y - v0.pos.y;
+            float dz1 = v1.pos.z - v0.pos.z;
+            float dx2 = v2.pos.x - v0.pos.x;
+            float dy2 = v2.pos.y - v0.pos.y;
+            float dz2 = v2.pos.z - v0.pos.z;
+
+            float du1 = v1.texCoord.x - v0.texCoord.x;
+            float dv1 = v1.texCoord.y - v0.texCoord.y;
+            float du2 = v2.texCoord.x - v0.texCoord.x;
+            float dv2 = v2.texCoord.y - v0.texCoord.y;
+
+            float det = du1 * dv2 - du2 * dv1;
+            if (std::abs(det) < 1e-8f)
+                continue; // Degenerate UV triangle
+
+            float invDet = 1.0f / det;
+
+            // Tangent direction
+            float tx = (dv2 * dx1 - dv1 * dx2) * invDet;
+            float ty = (dv2 * dy1 - dv1 * dy2) * invDet;
+            float tz = (dv2 * dz1 - dv1 * dz2) * invDet;
+
+            // Bitangent direction
+            float bx = (du1 * dx2 - du2 * dx1) * invDet;
+            float by = (du1 * dy2 - du2 * dy1) * invDet;
+            float bz = (du1 * dz2 - du2 * dz1) * invDet;
+
+            for (uint32_t idx : {i0, i1, i2})
+            {
+                tanAccum[idx].x += tx;
+                tanAccum[idx].y += ty;
+                tanAccum[idx].z += tz;
+                bitanAccum[idx].x += bx;
+                bitanAccum[idx].y += by;
+                bitanAccum[idx].z += bz;
+            }
+        }
+
+        // Gram-Schmidt orthogonalize tangent against normal, compute handedness
+        for (size_t i = 0; i < vertCount; ++i)
+        {
+            XMVECTOR n = XMLoadFloat3(&verts[i].normal);
+            XMVECTOR t = XMLoadFloat3(&tanAccum[i]);
+            XMVECTOR b = XMLoadFloat3(&bitanAccum[i]);
+
+            // Gram-Schmidt: t' = normalize(t - n * dot(n, t))
+            XMVECTOR nDotT = XMVector3Dot(n, t);
+            XMVECTOR tOrtho = XMVector3Normalize(XMVectorSubtract(t, XMVectorMultiply(n, nDotT)));
+
+            // Check if tangent was valid (non-degenerate)
+            if (XMVectorGetX(XMVector3Length(t)) < 1e-8f)
+            {
+                // Fallback: generate an arbitrary tangent perpendicular to normal
+                XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+                if (std::abs(XMVectorGetX(XMVector3Dot(n, up))) > 0.99f)
+                    up = XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f);
+                tOrtho = XMVector3Normalize(XMVector3Cross(n, up));
+            }
+
+            // Handedness: sign of dot(cross(n, t), b)
+            float handedness = (XMVectorGetX(XMVector3Dot(XMVector3Cross(n, tOrtho), b)) < 0.0f) ? -1.0f : 1.0f;
+
+            XMFLOAT3 tResult;
+            XMStoreFloat3(&tResult, tOrtho);
+            verts[i].tangent = {tResult.x, tResult.y, tResult.z, handedness};
+        }
+    }
+
     return mesh;
 }
 
@@ -198,7 +292,8 @@ Result<> MeshLoader::write_cache(const MeshData& mesh, std::string_view cachePat
     for (const auto& v : mesh.vertices)
     {
         fbVertices.emplace_back(fb::Vec3(v.pos.x, v.pos.y, v.pos.z), fb::Vec3(v.normal.x, v.normal.y, v.normal.z),
-                                fb::Vec2(v.texCoord.x, v.texCoord.y));
+                                fb::Vec2(v.texCoord.x, v.texCoord.y),
+                                fb::Vec4(v.tangent.x, v.tangent.y, v.tangent.z, v.tangent.w));
     }
 
     fb::Vec3 bMin(mesh.boundsMin.x, mesh.boundsMin.y, mesh.boundsMin.z);
@@ -265,6 +360,7 @@ Result<std::shared_ptr<MeshData>> MeshLoader::read_cache(std::string_view cacheP
             vertex.pos = {v->position().x(), v->position().y(), v->position().z()};
             vertex.normal = {v->normal().x(), v->normal().y(), v->normal().z()};
             vertex.texCoord = {v->tex_coord().x(), v->tex_coord().y()};
+            vertex.tangent = {v->tangent().x(), v->tangent().y(), v->tangent().z(), v->tangent().w()};
             mesh->vertices.push_back(vertex);
         }
     }

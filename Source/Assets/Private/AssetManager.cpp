@@ -1,9 +1,13 @@
 #include "../Public/AssetManager.hpp"
 #include "MeshLoader.hpp"
+#include "ModelLoader.hpp"
+#include "TextureLoader.hpp"
 
 #include <entt/core/hashed_string.hpp>
 
-AssetManager::AssetManager() : m_meshCache(MeshLoader{}), m_executor(std::thread::hardware_concurrency())
+AssetManager::AssetManager()
+    : m_meshCache(MeshLoader{}), m_textureCache(TextureLoader{}), m_modelCache(ModelLoader{}),
+      m_executor(std::thread::hardware_concurrency())
 {}
 
 AssetManager::~AssetManager()
@@ -71,6 +75,13 @@ void AssetManager::clear_materials() noexcept
 
 // --- Texture (stub implementation — data model ready, GPU upload deferred) ---
 
+entt::resource<TextureData> AssetManager::load_texture(std::string_view path)
+{
+    auto id = path_to_id(path);
+    auto [it, inserted] = m_textureCache.load(id, path);
+    return it->second;
+}
+
 entt::resource<TextureData> AssetManager::load_texture(std::string_view name, const TextureData& data)
 {
     auto id = path_to_id(name);
@@ -91,4 +102,28 @@ size_t AssetManager::texture_count() const noexcept
 void AssetManager::clear_textures() noexcept
 {
     m_textureCache.clear();
+}
+
+// --- Model ---
+
+entt::resource<ModelData> AssetManager::load_model(std::string_view path)
+{
+    auto id = path_to_id(path);
+    auto [it, inserted] = m_modelCache.load(id, path);
+    return it->second;
+}
+
+bool AssetManager::contains_model(std::string_view path) const
+{
+    return m_modelCache.contains(path_to_id(path));
+}
+
+size_t AssetManager::model_count() const noexcept
+{
+    return m_modelCache.size();
+}
+
+void AssetManager::clear_models() noexcept
+{
+    m_modelCache.clear();
 }

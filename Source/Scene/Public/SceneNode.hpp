@@ -60,6 +60,17 @@ class NOC_EXPORT SceneNode
         return m_meshIndex >= 0;
     }
 
+    // --- Material ---
+
+    void set_material_index(int32_t index) noexcept
+    {
+        m_materialIndex = index;
+    }
+    int32_t get_material_index() const noexcept
+    {
+        return m_materialIndex;
+    }
+
     // --- Hierarchy ---
 
     const std::string& get_name() const noexcept
@@ -79,6 +90,7 @@ class NOC_EXPORT SceneNode
     std::string m_name;
     Transform m_transform{};
     int32_t m_meshIndex{-1};
+    int32_t m_materialIndex{0}; // Default material (index 0)
 
     SceneNode* m_parent{nullptr};
     std::vector<std::unique_ptr<SceneNode>> m_children;

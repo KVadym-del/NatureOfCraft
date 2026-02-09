@@ -11,10 +11,18 @@ struct Vec3 {
     z: float;
 }
 
+struct Vec4 {
+    x: float;
+    y: float;
+    z: float;
+    w: float;
+}
+
 struct VertexData {
     position: Vec3;
     normal: Vec3;
     tex_coord: Vec2;
+    tangent: Vec4;
 }
 
 table MeshAsset {

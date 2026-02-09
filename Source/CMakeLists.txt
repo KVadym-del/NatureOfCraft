@@ -7,6 +7,7 @@ find_package(directxmath CONFIG REQUIRED)
 find_package(Taskflow CONFIG REQUIRED)
 find_package(EnTT CONFIG REQUIRED)
 find_package(flatbuffers CONFIG REQUIRED)
+find_package(Stb REQUIRED)
 find_path(SOL2_INCLUDE_DIRS "sol/abort.hpp")
 
 # --- FlatBuffers schema compilation ---
@@ -49,6 +50,7 @@ target_include_directories(Source PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_include_directories(Source PUBLIC "${FBS_GENERATED_DIR}")
 
 target_include_directories(Source PRIVATE ${SOL2_INCLUDE_DIRS})
+target_include_directories(Source PRIVATE ${Stb_INCLUDE_DIR})
 
 target_compile_options(Source PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /std:c++latest>
