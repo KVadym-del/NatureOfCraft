@@ -56,6 +56,9 @@ enum class ErrorCode
     AssetCacheWriteFailed,
     AssetCacheReadFailed,
     AssetInvalidData,
+
+    // Shader Errors
+    ShaderCompilationFailed = 400,
 };
 
 struct Error

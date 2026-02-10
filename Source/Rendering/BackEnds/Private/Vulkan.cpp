@@ -6,6 +6,7 @@
 #include "../../../Assets/Public/MeshData.hpp"
 #include "../../../Assets/Public/TextureData.hpp"
 #include "../../Public/Mesh.hpp"
+#include "../../Public/ShaderCompiler.hpp"
 
 #include <algorithm>
 #include <array>
@@ -35,7 +36,23 @@ Result<> Vulkan::initialize() noexcept
         return result;
     if (auto result = create_scene_render_target(); !result)
         return result;
-    if (auto result = m_pipeline.initialize(m_sceneRenderPass, m_msaaSamples); !result)
+
+    // Compile shaders from source (or use cached .spv)
+    {
+        auto vertSpvPath = ShaderCompiler::get_spv_path(m_vertShaderPath);
+        auto vertResult = ShaderCompiler::compile_or_cache(m_vertShaderPath, vertSpvPath);
+        if (!vertResult)
+            return make_error(vertResult.error());
+        m_vertSpirv = std::move(vertResult.value());
+
+        auto fragSpvPath = ShaderCompiler::get_spv_path(m_fragShaderPath);
+        auto fragResult = ShaderCompiler::compile_or_cache(m_fragShaderPath, fragSpvPath);
+        if (!fragResult)
+            return make_error(fragResult.error());
+        m_fragSpirv = std::move(fragResult.value());
+    }
+
+    if (auto result = m_pipeline.initialize(m_sceneRenderPass, m_msaaSamples, m_vertSpirv, m_fragSpirv); !result)
         return result;
 
     if (auto result = create_sampler(); !result)
@@ -1279,7 +1296,6 @@ void Vulkan::set_vsync(KHR_Settings mode) noexcept
     if (m_vsyncEnabled && mode == KHR_Settings::VSync)
         return;
 
-
     VkDevice device = m_vulkanDevice.get_device();
     vkDeviceWaitIdle(device);
 
@@ -1348,7 +1364,7 @@ void Vulkan::set_msaa_samples(int samples) noexcept
     (void)create_scene_render_pass();
     compute_scene_render_size();
     (void)create_scene_render_target();
-    (void)m_pipeline.initialize(m_sceneRenderPass, m_msaaSamples);
+    (void)m_pipeline.initialize(m_sceneRenderPass, m_msaaSamples, m_vertSpirv, m_fragSpirv);
 }
 
 int Vulkan::get_msaa_samples() const noexcept
@@ -1375,4 +1391,34 @@ void Vulkan::set_render_scale(float scale) noexcept
 float Vulkan::get_render_scale() const noexcept
 {
     return m_renderScale;
+}
+
+/// Shader management
+
+void Vulkan::set_shader_paths(const std::filesystem::path& vertPath, const std::filesystem::path& fragPath)
+{
+    m_vertShaderPath = vertPath;
+    m_fragShaderPath = fragPath;
+}
+
+Result<> Vulkan::recompile_shaders()
+{
+    VkDevice device = m_vulkanDevice.get_device();
+    vkDeviceWaitIdle(device);
+
+    // Compile fresh SPIR-V from source (bypass cache — always recompile)
+    auto vertResult = ShaderCompiler::compile_file(m_vertShaderPath);
+    if (!vertResult)
+        return make_error(vertResult.error());
+
+    auto fragResult = ShaderCompiler::compile_file(m_fragShaderPath);
+    if (!fragResult)
+        return make_error(fragResult.error());
+
+    m_vertSpirv = std::move(vertResult.value());
+    m_fragSpirv = std::move(fragResult.value());
+
+    // Rebuild pipeline with new SPIR-V
+    m_pipeline.cleanup();
+    return m_pipeline.initialize(m_sceneRenderPass, m_msaaSamples, m_vertSpirv, m_fragSpirv);
 }

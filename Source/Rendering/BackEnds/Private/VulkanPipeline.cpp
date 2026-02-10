@@ -1,5 +1,4 @@
 #include "../Public/VulkanPipeline.hpp"
-#include "../../../Core/Public/Utils.hpp"
 #include "../../Public/Mesh.hpp"
 
 #include <array>
@@ -13,29 +12,23 @@ VulkanPipeline::~VulkanPipeline()
     cleanup();
 }
 
-Result<> VulkanPipeline::initialize(VkRenderPass renderPass, VkSampleCountFlagBits msaaSamples)
+Result<> VulkanPipeline::initialize(VkRenderPass renderPass, VkSampleCountFlagBits msaaSamples,
+                                    const std::vector<uint32_t>& vertSpirv, const std::vector<uint32_t>& fragSpirv)
 {
     VkDevice device = m_device.get_device();
 
-    // 1. Load Shaders
-    auto vertShaderCodeResult = read_file("Resources/vert.spv");
-    if (!vertShaderCodeResult)
-        return make_error(vertShaderCodeResult.error());
-    auto vertShaderCode = vertShaderCodeResult.value();
-
-    auto fragShaderCode = read_file("Resources/frag.spv");
-    if (!fragShaderCode)
-        return make_error(fragShaderCode.error());
-    auto fragShaderCodeValue = fragShaderCode.value();
-
-    auto vertShaderModuleResult = create_shader_module(vertShaderCode);
+    // 1. Create shader modules from pre-compiled SPIR-V
+    auto vertShaderModuleResult = create_shader_module(vertSpirv);
     if (!vertShaderModuleResult)
         return make_error(vertShaderModuleResult.error());
     VkShaderModule vertShaderModule = vertShaderModuleResult.value();
 
-    auto fragShaderModuleResult = create_shader_module(fragShaderCodeValue);
+    auto fragShaderModuleResult = create_shader_module(fragSpirv);
     if (!fragShaderModuleResult)
+    {
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
         return make_error(fragShaderModuleResult.error());
+    }
     VkShaderModule fragShaderModule = fragShaderModuleResult.value();
 
     VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
@@ -218,14 +211,14 @@ void VulkanPipeline::cleanup() noexcept
     }
 }
 
-Result<VkShaderModule> VulkanPipeline::create_shader_module(const std::vector<char>& code) noexcept
+Result<VkShaderModule> VulkanPipeline::create_shader_module(const std::vector<uint32_t>& spirv) noexcept
 {
     VkDevice device = m_device.get_device();
 
     VkShaderModuleCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    createInfo.codeSize = code.size();
-    createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+    createInfo.codeSize = spirv.size() * sizeof(uint32_t);
+    createInfo.pCode = spirv.data();
 
     VkShaderModule shaderModule;
     if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS)

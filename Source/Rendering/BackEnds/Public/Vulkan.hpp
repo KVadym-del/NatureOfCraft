@@ -7,6 +7,7 @@
 #include "VulkanPipeline.hpp"
 #include "VulkanSwapchain.hpp"
 
+#include <filesystem>
 #include <functional>
 #include <string>
 #include <vector>
@@ -196,6 +197,10 @@ class NOC_EXPORT Vulkan : public IRenderer
     void set_render_scale(float scale) noexcept override;
     float get_render_scale() const noexcept override;
 
+    // --- Shader management (IRenderer overrides) ---
+    void set_shader_paths(const std::filesystem::path& vertPath, const std::filesystem::path& fragPath) override;
+    Result<> recompile_shaders() override;
+
   private:
     Result<> create_command_buffers();
     Result<> record_command_buffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) noexcept;
@@ -280,6 +285,12 @@ class NOC_EXPORT Vulkan : public IRenderer
     float m_renderScale{1.0f};
     VkSampleCountFlagBits m_msaaSamples{VK_SAMPLE_COUNT_1_BIT};
     bool m_vsyncEnabled{false}; // Default: auto (mailbox preferred)
+
+    // --- Shader paths and cached SPIR-V ---
+    std::filesystem::path m_vertShaderPath{"Resources/shader.vert"};
+    std::filesystem::path m_fragShaderPath{"Resources/shader.frag"};
+    std::vector<uint32_t> m_vertSpirv{};
+    std::vector<uint32_t> m_fragSpirv{};
 };
 
 NOC_RESTORE_DLL_WARNINGS

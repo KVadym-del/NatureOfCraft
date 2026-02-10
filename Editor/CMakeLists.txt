@@ -12,41 +12,19 @@ target_compile_options(Editor PRIVATE
 )
 target_link_libraries(Editor PRIVATE Source)
 
-# --- Shader compilation ---
+# --- Copy shader source files to output (compiled at runtime by ShaderCompiler) ---
 
-find_program(GLSLC_EXECUTABLE NAMES glslc
-    HINTS
-        ${Vulkan_BIN_DIR}
-        "$ENV{VULKAN_SDK}/Bin"
-        "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/tools/shaderc"
+file(GLOB SHADER_SOURCE_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/Resources/*.vert"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Resources/*.frag"
 )
-if(NOT GLSLC_EXECUTABLE)
-    message(FATAL_ERROR "glslc not found! Install Vulkan SDK or 'shaderc' via vcpkg.")
-endif()
-
-set(SHADER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Resources")
-set(SHADER_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/Resources")
-file(MAKE_DIRECTORY "${SHADER_BINARY_DIR}")
-
-file(GLOB SHADER_FILES "${SHADER_SOURCE_DIR}/*.vert" "${SHADER_SOURCE_DIR}/*.frag")
-set(SPV_FILES "")
-
-foreach(SHADER ${SHADER_FILES})
-    get_filename_component(SHADER_EXT ${SHADER} EXT)
-    string(SUBSTRING ${SHADER_EXT} 1 -1 SHADER_TYPE)
-    set(SPV_OUTPUT "${SHADER_BINARY_DIR}/${SHADER_TYPE}.spv")
-
-    add_custom_command(
-        OUTPUT ${SPV_OUTPUT}
-        COMMAND ${GLSLC_EXECUTABLE} ${SHADER} -o ${SPV_OUTPUT}
-        DEPENDS ${SHADER}
-        COMMENT "Compiling ${SHADER_TYPE} shader"
+foreach(SHADER_SRC ${SHADER_SOURCE_FILES})
+    get_filename_component(SHADER_NAME ${SHADER_SRC} NAME)
+    add_custom_command(TARGET Editor POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SHADER_SRC} "$<TARGET_FILE_DIR:Editor>/Resources/${SHADER_NAME}"
+        COMMENT "Copying shader source: ${SHADER_NAME}"
     )
-    list(APPEND SPV_FILES ${SPV_OUTPUT})
 endforeach()
-
-add_custom_target(CompileShaders ALL DEPENDS ${SPV_FILES})
-add_dependencies(Editor CompileShaders)
 
 # --- Copy runtime assets ---
 
@@ -80,3 +58,29 @@ foreach(ASSET ${ASSET_FILES})
         COMMENT "Copying ${ASSET_NAME}"
     )
 endforeach()
+
+# ── Self-contained release bundle ──────────────────────────────────────
+# Usage: cmake --build <build-dir> --target Bundle
+# Output: <build-dir>/bundle/NatureOfCraft/
+
+set(BUNDLE_DIR "${CMAKE_BINARY_DIR}/bundle/NatureOfCraft")
+
+add_custom_target(Bundle
+    DEPENDS Editor
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${BUNDLE_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${BUNDLE_DIR}/Resources"
+    # Executable
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:Editor>" "${BUNDLE_DIR}/"
+    # Runtime DLLs (Source.dll + vcpkg shared libs: fmt, glfw3, etc.)
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_RUNTIME_DLLS:Editor>" "${BUNDLE_DIR}/"
+    # Vulkan loader — FindVulkan creates an import-lib target so
+    # TARGET_RUNTIME_DLLS cannot resolve the DLL; copy it explicitly.
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin/vulkan-1.dll"
+        "${BUNDLE_DIR}/"
+    # Shader sources + sample assets
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/Resources" "${BUNDLE_DIR}/Resources"
+    COMMAND_EXPAND_LISTS
+    COMMENT "Bundling self-contained release → ${BUNDLE_DIR}"
+)

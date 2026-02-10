@@ -8,6 +8,7 @@ find_package(Taskflow CONFIG REQUIRED)
 find_package(EnTT CONFIG REQUIRED)
 find_package(flatbuffers CONFIG REQUIRED)
 find_package(Stb REQUIRED)
+find_package(unofficial-shaderc CONFIG REQUIRED)
 find_path(SOL2_INCLUDE_DIRS "sol/abort.hpp")
 
 # --- FlatBuffers schema compilation ---
@@ -67,4 +68,8 @@ target_link_libraries(Source PUBLIC
     Taskflow::Taskflow
     EnTT::EnTT
     flatbuffers::flatbuffers
+)
+
+target_link_libraries(Source PRIVATE
+    unofficial::shaderc::shaderc
 )

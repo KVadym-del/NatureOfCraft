@@ -3,6 +3,7 @@
 #include "Renderable.hpp"
 
 #include <cstdint>
+#include <filesystem>
 #include <vector>
 
 #include <DirectXMath.h>
@@ -76,6 +77,16 @@ class NOC_EXPORT IRenderer
 
     /// Get current render resolution scale.
     virtual float get_render_scale() const noexcept = 0;
+
+    // --- Shader management ---
+
+    /// Set the paths to the GLSL vertex and fragment shader source files.
+    /// The renderer will use these for subsequent shader compilations.
+    virtual void set_shader_paths(const std::filesystem::path& vertPath, const std::filesystem::path& fragPath) = 0;
+
+    /// Recompile shaders from the current shader source paths.
+    /// Rebuilds the graphics pipeline with the newly compiled SPIR-V.
+    virtual Result<> recompile_shaders() = 0;
 };
 
 NOC_RESTORE_DLL_WARNINGS

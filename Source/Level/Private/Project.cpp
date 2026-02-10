@@ -32,6 +32,22 @@ Result<Project> Project::create_new(std::string name, std::string rootPath)
     fs::create_directories(fs::path(project.m_rootPath) / project.m_assetDirectory, ec);
     // Non-fatal if asset dir creation fails; user can create it manually.
 
+    // Create Shaders sub-directory and copy default shader sources.
+    fs::path shadersDir = fs::path(project.m_rootPath) / "Assets" / "Shaders";
+    fs::create_directories(shadersDir, ec);
+
+    // Copy default shaders from engine's Resources/ directory (next to executable).
+    for (const auto& shaderName : {"shader.vert", "shader.frag"})
+    {
+        fs::path src = fs::path("Resources") / shaderName;
+        fs::path dst = shadersDir / shaderName;
+        std::error_code copyEc;
+        fs::copy_file(src, dst, fs::copy_options::skip_existing, copyEc);
+        // Non-fatal: user can create shaders manually if defaults aren't found.
+        if (copyEc)
+            fmt::print("Warning: could not copy default shader '{}': {}\n", src.string(), copyEc.message());
+    }
+
     // Save the initial manifest.
     auto result = project.save();
     if (!result)

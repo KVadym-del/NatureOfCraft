@@ -596,6 +596,15 @@ int main()
 
         World& world = level->world();
 
+        // Point the renderer at the project's shader sources (if available)
+        if (project)
+        {
+            fs::path vertShader = project->get_absolute_path("Assets/Shaders/shader.vert");
+            fs::path fragShader = project->get_absolute_path("Assets/Shaders/shader.frag");
+            if (fs::exists(vertShader) && fs::exists(fragShader))
+                renderer.set_shader_paths(vertShader, fragShader);
+        }
+
         // Re-import all referenced models so entities have valid GPU indices
         renderer.wait_idle();
         reload_level_assets(assetManager, renderer, world, statusMessage, project.get());
@@ -987,6 +996,20 @@ int main()
                     ImGui::SameLine();
                     if (ImGui::RadioButton("Immediate", &selected, static_cast<int>(KHR_Settings::Immediate)))
                         renderer.set_vsync(KHR_Settings::Immediate);
+
+                    // Shader recompilation
+                    ImGui::Spacing();
+                    ImGui::SeparatorText("Shaders");
+                    if (ImGui::Button("Recompile Shaders"))
+                    {
+                        renderer.wait_idle();
+                        auto result = renderer.recompile_shaders();
+                        if (result)
+                            statusMessage = {"Shaders recompiled successfully.", false, 3.0f};
+                        else
+                            statusMessage = {fmt::format("Shader compilation failed: {}", result.error().message), true,
+                                             5.0f};
+                    }
                 }
                 ImGui::End();
 
