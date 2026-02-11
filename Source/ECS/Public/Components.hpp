@@ -41,19 +41,25 @@ struct TransformComponent
     }
 
     /// Returns rotation as Euler angles (in radians): pitch (X), yaw (Y), roll (Z).
+    /// Uses YXZ decomposition to match XMQuaternionRotationRollPitchYaw(pitch, yaw, roll).
+    /// Pitch (X) is the middle axis → constrained to ±90° (gimbal-lock axis).
+    /// Yaw (Y) and Roll (Z) have the full ±180° range.
     DirectX::XMFLOAT3 get_rotation_euler() const noexcept
     {
         float qx = rotation.x, qy = rotation.y, qz = rotation.z, qw = rotation.w;
 
-        float sinp = 2.0f * (qw * qx + qy * qz);
-        float cosp = 1.0f - 2.0f * (qx * qx + qy * qy);
-        float pitch = std::atan2(sinp, cosp);
+        // Pitch (X) — middle axis, use asin, range ±π/2
+        float sinp = 2.0f * (qw * qx - qy * qz);
+        float pitch = (std::abs(sinp) >= 1.0f) ? std::copysign(DirectX::XM_PIDIV2, sinp) : std::asin(sinp);
 
-        float siny = 2.0f * (qw * qy - qz * qx);
-        float yaw = (std::abs(siny) >= 1.0f) ? std::copysign(DirectX::XM_PIDIV2, siny) : std::asin(siny);
+        // Yaw (Y) — use atan2, range ±π
+        float siny = 2.0f * (qw * qy + qx * qz);
+        float cosy = 1.0f - 2.0f * (qx * qx + qy * qy);
+        float yaw = std::atan2(siny, cosy);
 
+        // Roll (Z) — use atan2, range ±π
         float sinr = 2.0f * (qw * qz + qx * qy);
-        float cosr = 1.0f - 2.0f * (qy * qy + qz * qz);
+        float cosr = 1.0f - 2.0f * (qx * qx + qz * qz);
         float roll = std::atan2(sinr, cosr);
 
         return {pitch, yaw, roll};
@@ -103,4 +109,13 @@ struct CameraComponent
 struct WorldMatrixCache
 {
     DirectX::XMFLOAT4X4 worldMatrix{};
+};
+
+/// Lua script attached to an entity.
+/// The script file must define on_start(entity), on_update(entity, dt),
+/// and/or on_destroy(entity) functions.
+struct ScriptComponent
+{
+    std::string scriptPath;  // project-relative path, e.g. "Assets/Scripts/spin.lua"
+    bool initialized{false}; // has on_start() been called?
 };

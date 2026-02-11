@@ -42,6 +42,10 @@ table CameraComponentData {
     pitch: float = 0.0;
 }
 
+table ScriptComponentData {
+    script_path: string;
+}
+
 // ── Entity ──────────────────────────────────────────────────────────
 
 table EntityData {
@@ -49,6 +53,7 @@ table EntityData {
     transform: TransformData;
     mesh: MeshComponentData;         // null if entity has no mesh
     camera: CameraComponentData;     // null if entity has no camera
+    script: ScriptComponentData;     // null if entity has no script
     children: [EntityData];          // recursive hierarchy
 }
 

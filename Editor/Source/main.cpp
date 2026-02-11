@@ -7,6 +7,7 @@
 #include <Level/Public/Level.hpp>
 #include <Level/Public/Project.hpp>
 #include <Rendering/BackEnds/Public/Vulkan.hpp>
+#include <Scripting/Public/ScriptEngine.hpp>
 #include <Window/Public/Window.hpp>
 #include <imgui.h>
 #include <imgui_impl_vulkan.h>
@@ -173,6 +174,31 @@ static void draw_transform_inspector(TransformComponent& t)
     float scl[3] = {t.scale.x, t.scale.y, t.scale.z};
     if (ImGui::DragFloat3("Scale", scl, 0.01f, 0.001f, 100.0f))
         t.scale = {scl[0], scl[1], scl[2]};
+}
+
+// ── Script scanner ────────────────────────────────────────────────────
+// Scans for .lua files in the project directory.
+// Returns project-relative paths (e.g. "Scripts/spin.lua") suitable for ScriptComponent.
+
+static std::vector<std::string> scan_available_scripts(const Project* project)
+{
+    std::set<std::string> scripts;
+
+    if (!project)
+        return {};
+
+    fs::path root(project->root_path());
+    if (!fs::exists(root))
+        return {};
+
+    std::error_code ec;
+    for (const auto& entry : fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec))
+    {
+        if (entry.is_regular_file() && entry.path().extension() == ".lua")
+            scripts.insert(fs::relative(entry.path(), root).generic_string());
+    }
+
+    return {scripts.begin(), scripts.end()};
 }
 
 // ── Import model helper ───────────────────────────────────────────────
@@ -572,6 +598,13 @@ int main()
     // ── Shared state ──────────────────────────────────────────────────
     AssetManager assetManager;
     OrbitCameraController cameraController;
+    ScriptEngine scriptEngine;
+
+    if (auto initResult = scriptEngine.initialize(); !initResult)
+    {
+        fmt::print("Failed to initialize ScriptEngine: {}\n", initResult.error().message);
+        return -1;
+    }
 
     EditorState editorState = EditorState::ProjectBrowser;
     std::unique_ptr<Project> project;
@@ -595,6 +628,10 @@ int main()
         selectedEntity = entt::null;
 
         World& world = level->world();
+
+        // Configure script engine for this project's script directory
+        if (project)
+            scriptEngine.set_script_root(project->root_path());
 
         // Point the renderer at the project's shader sources (if available)
         if (project)
@@ -716,6 +753,7 @@ int main()
                                              cameraController.get_projection_matrix(ar));
 
                 World& world = level->world();
+                scriptEngine.update(world, deltaTime);
                 world.update_world_matrices();
                 renderer.set_renderables(world.collect_renderables());
             }
@@ -1158,6 +1196,78 @@ int main()
                             ImGui::DragFloat("Far", &cam.farPlane, 1.0f, 10.0f, 10000.0f);
                         }
 
+                        // Script component section
+                        if (auto* sc = world.registry().try_get<ScriptComponent>(selectedEntity))
+                        {
+                            ImGui::Separator();
+                            ImGui::Text("Script: %s", sc->scriptPath.empty() ? "(none)" : sc->scriptPath.c_str());
+
+                            if (ImGui::Button("Reload Script"))
+                            {
+                                auto result = scriptEngine.reload_script(world, selectedEntity);
+                                if (result)
+                                    statusMessage = {"Script reloaded.", false, 3.0f};
+                                else
+                                    statusMessage = {fmt::format("Reload failed: {}", result.error().message), true,
+                                                     5.0f};
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::Button("Remove Script"))
+                            {
+                                scriptEngine.on_entity_destroyed(world, selectedEntity);
+                                world.registry().remove<ScriptComponent>(selectedEntity);
+                                level->mark_dirty();
+                            }
+                        }
+                        else
+                        {
+                            ImGui::Separator();
+
+                            static std::vector<std::string> availableScripts;
+                            static int selectedScriptIdx = 0;
+
+                            // Auto-scan on first use
+                            if (availableScripts.empty())
+                                availableScripts = scan_available_scripts(project.get());
+
+                            if (!availableScripts.empty())
+                            {
+                                if (selectedScriptIdx >= static_cast<int>(availableScripts.size()))
+                                    selectedScriptIdx = 0;
+
+                                if (ImGui::BeginCombo("Script", availableScripts[selectedScriptIdx].c_str()))
+                                {
+                                    for (int i = 0; i < static_cast<int>(availableScripts.size()); ++i)
+                                    {
+                                        bool isSelected = (selectedScriptIdx == i);
+                                        if (ImGui::Selectable(availableScripts[i].c_str(), isSelected))
+                                            selectedScriptIdx = i;
+                                        if (isSelected)
+                                            ImGui::SetItemDefaultFocus();
+                                    }
+                                    ImGui::EndCombo();
+                                }
+
+                                if (ImGui::Button("Attach"))
+                                {
+                                    auto& newSc = world.registry().emplace<ScriptComponent>(selectedEntity);
+                                    newSc.scriptPath = availableScripts[selectedScriptIdx];
+                                    level->mark_dirty();
+                                }
+                                ImGui::SameLine();
+                            }
+                            else
+                            {
+                                ImGui::TextDisabled("No .lua scripts found");
+                            }
+
+                            if (ImGui::Button("Scan Scripts"))
+                            {
+                                availableScripts = scan_available_scripts(project.get());
+                                selectedScriptIdx = 0;
+                            }
+                        }
+
                         ImGui::Separator();
                         auto& tc = world.registry().get<TransformComponent>(selectedEntity);
                         draw_transform_inspector(tc);
@@ -1177,6 +1287,7 @@ int main()
                             }
                             else
                             {
+                                scriptEngine.on_entity_destroyed(world, selectedEntity);
                                 world.destroy_entity(selectedEntity);
                                 selectedEntity = entt::null;
                                 level->mark_dirty();
@@ -1206,6 +1317,7 @@ int main()
     }
 
     renderer.wait_idle();
+    scriptEngine.shutdown();
     Editor::UI::Shutdown(vulkan);
     ImGui::DestroyContext();
 

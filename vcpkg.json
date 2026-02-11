@@ -15,10 +15,11 @@
     "rapidobj",
     "shaderc",
     "sol2",
+    "stb",
     "taskflow",
     "vulkan",
     "vulkan-headers",
     "vulkan-loader",
-    "stb"
+    "luajit"
   ]
 }

@@ -49,6 +49,14 @@ static fb::Offset<fbl::EntityData> serialize_entity(fb::FlatBufferBuilder& fbb, 
                                                       cc->distance, cc->yaw, cc->pitch);
     }
 
+    // Script component (optional)
+    fb::Offset<fbl::ScriptComponentData> scriptOffset = 0;
+    if (const auto* sc = reg.try_get<ScriptComponent>(entity))
+    {
+        if (!sc->scriptPath.empty())
+            scriptOffset = fbl::CreateScriptComponentDataDirect(fbb, sc->scriptPath.c_str());
+    }
+
     // Children (recursive)
     fb::Offset<fb::Vector<fb::Offset<fbl::EntityData>>> childrenOffset = 0;
     if (const auto* hc = reg.try_get<HierarchyComponent>(entity))
@@ -65,21 +73,28 @@ static fb::Offset<fbl::EntityData> serialize_entity(fb::FlatBufferBuilder& fbb, 
         }
     }
 
-    return fbl::CreateEntityData(fbb, nameOffset, transformOffset, meshOffset, cameraOffset, childrenOffset);
+    return fbl::CreateEntityData(fbb, nameOffset, transformOffset, meshOffset, cameraOffset, scriptOffset,
+                                 childrenOffset);
 }
 
-/// Collects all unique asset paths from MeshComponents for the referenced_assets list.
+/// Collects all unique asset paths from MeshComponents and ScriptComponents for the referenced_assets list.
 static std::vector<std::string> collect_referenced_assets(const World& world)
 {
     auto& reg = const_cast<World&>(world).registry();
     std::set<std::string> assetPaths;
-    auto view = reg.view<MeshComponent>();
-    for (auto entity : view)
+
+    for (auto [entity, mc] : reg.view<MeshComponent>().each())
     {
-        const auto& mc = view.get<MeshComponent>(entity);
         if (!mc.assetPath.empty())
             assetPaths.insert(mc.assetPath);
     }
+
+    for (auto [entity, sc] : reg.view<ScriptComponent>().each())
+    {
+        if (!sc.scriptPath.empty())
+            assetPaths.insert(sc.scriptPath);
+    }
+
     return {assetPaths.begin(), assetPaths.end()};
 }
 
@@ -126,6 +141,13 @@ static entt::entity deserialize_entity(World& world, const fbl::EntityData* data
         cc.distance = cd->distance();
         cc.yaw = cd->yaw();
         cc.pitch = cd->pitch();
+    }
+
+    // Script component
+    if (const auto* sd = data->script())
+    {
+        auto& sc = world.registry().emplace<ScriptComponent>(entity);
+        sc.scriptPath = sd->script_path() ? sd->script_path()->str() : "";
     }
 
     // Set parent

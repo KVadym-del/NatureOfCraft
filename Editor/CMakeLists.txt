@@ -59,6 +59,17 @@ foreach(ASSET ${ASSET_FILES})
     )
 endforeach()
 
+# --- Copy Lua scripts (preserving subdirectory structure) ---
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Resources/scripts")
+    add_custom_command(TARGET Editor POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/Resources/scripts"
+            "$<TARGET_FILE_DIR:Editor>/Resources/scripts"
+        COMMENT "Copying Lua scripts"
+    )
+endif()
+
 # ── Self-contained release bundle ──────────────────────────────────────
 # Usage: cmake --build <build-dir> --target Bundle
 # Output: <build-dir>/bundle/NatureOfCraft/
@@ -77,6 +88,10 @@ add_custom_target(Bundle
     # TARGET_RUNTIME_DLLS cannot resolve the DLL; copy it explicitly.
     COMMAND ${CMAKE_COMMAND} -E copy
         "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin/vulkan-1.dll"
+        "${BUNDLE_DIR}/"
+    # LuaJIT runtime — no CMake config in vcpkg, same issue as Vulkan loader.
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin/lua51.dll"
         "${BUNDLE_DIR}/"
     # Shader sources + sample assets
     COMMAND ${CMAKE_COMMAND} -E copy_directory

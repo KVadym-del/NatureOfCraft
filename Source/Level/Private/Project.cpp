@@ -48,6 +48,19 @@ Result<Project> Project::create_new(std::string name, std::string rootPath)
             fmt::print("Warning: could not copy default shader '{}': {}\n", src.string(), copyEc.message());
     }
 
+    // Create Scripts sub-directory and copy sample scripts from engine's Resources/.
+    fs::path scriptsDir = fs::path(project.m_rootPath) / "Scripts";
+    fs::create_directories(scriptsDir, ec);
+
+    fs::path sampleSrc = fs::path("Resources") / "scripts" / "spin.lua";
+    if (fs::exists(sampleSrc))
+    {
+        std::error_code copyEc;
+        fs::copy_file(sampleSrc, scriptsDir / "spin.lua", fs::copy_options::skip_existing, copyEc);
+        if (copyEc)
+            fmt::print("Warning: could not copy sample script '{}': {}\n", sampleSrc.string(), copyEc.message());
+    }
+
     // Save the initial manifest.
     auto result = project.save();
     if (!result)

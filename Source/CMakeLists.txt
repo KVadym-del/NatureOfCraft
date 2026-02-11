@@ -10,6 +10,8 @@ find_package(flatbuffers CONFIG REQUIRED)
 find_package(Stb REQUIRED)
 find_package(unofficial-shaderc CONFIG REQUIRED)
 find_path(SOL2_INCLUDE_DIRS "sol/abort.hpp")
+find_path(LUAJIT_INCLUDE_DIR luajit.h PATH_SUFFIXES luajit)
+find_library(LUAJIT_LIBRARY NAMES lua51)
 
 # --- FlatBuffers schema compilation ---
 find_program(FLATC_EXECUTABLE flatc
@@ -52,11 +54,14 @@ target_include_directories(Source PUBLIC "${FBS_GENERATED_DIR}")
 
 target_include_directories(Source PRIVATE ${SOL2_INCLUDE_DIRS})
 target_include_directories(Source PRIVATE ${Stb_INCLUDE_DIR})
+target_include_directories(Source PRIVATE ${LUAJIT_INCLUDE_DIR})
 
 target_compile_options(Source PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /std:c++latest>
     $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-std=c++2c>
 )
+
+target_compile_definitions(Source PRIVATE SOL_LUAJIT=1)
 
 target_link_libraries(Source PUBLIC
     fmt::fmt
@@ -72,4 +77,5 @@ target_link_libraries(Source PUBLIC
 
 target_link_libraries(Source PRIVATE
     unofficial::shaderc::shaderc
+    ${LUAJIT_LIBRARY}
 )
