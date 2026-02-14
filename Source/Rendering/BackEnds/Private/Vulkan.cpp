@@ -10,8 +10,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
+#include <tuple>
 #include <vector>
 
 #include <GLFW/glfw3.h>
@@ -19,6 +22,8 @@
 #include <imgui_impl_vulkan.h>
 
 #include <DirectXMath.h>
+#include <DirectXCollision.h>
+#include <fmt/core.h>
 using namespace DirectX;
 
 /// Initialization
@@ -73,11 +78,46 @@ Result<> Vulkan::initialize() noexcept
 
 /// Public methods
 
+void Vulkan::set_renderables(const std::vector<Renderable>& renderables) noexcept
+{
+    m_renderables = renderables;
+    std::sort(m_renderables.begin(), m_renderables.end(), [](const Renderable& lhs, const Renderable& rhs) {
+        return std::tie(lhs.materialIndex, lhs.meshIndex) < std::tie(rhs.materialIndex, rhs.meshIndex);
+    });
+
+    uint32_t totalTriangles = 0;
+    for (const auto& renderable : m_renderables)
+    {
+        if (renderable.meshIndex < m_meshes.size())
+            totalTriangles += m_meshes[renderable.meshIndex].indexCount / 3;
+    }
+    m_totalTriangleCountCached = totalTriangles;
+}
+
 Result<> Vulkan::draw_frame() noexcept
 {
     VkDevice device = m_vulkanDevice.get_device();
 
     vkWaitForFences(device, 1, &m_inFlightFences[m_currentFrame], true, UINT64_MAX);
+
+    if (m_framebufferResized)
+    {
+        m_framebufferResized = false;
+        if (auto recreateResult = recreate_swap_chain(); !recreateResult)
+            return recreateResult;
+        // Scene render targets were rebuilt — the ImGui draw data for this frame
+        // still references the old (now-destroyed) descriptor/image view.
+        // Skip this frame entirely so the next iteration builds ImGui with the
+        // correct, freshly-created resources.
+        return {};
+    }
+
+    if (m_sceneFramebuffer == VK_NULL_HANDLE || m_sceneRenderPass == VK_NULL_HANDLE || m_sceneColorImage == VK_NULL_HANDLE)
+    {
+        if (auto recreateResult = recreate_swap_chain(); !recreateResult)
+            return recreateResult;
+        return {};
+    }
 
     uint32_t imageIndex{};
     VkResult result = vkAcquireNextImageKHR(device, m_swapchain.get_swapchain(), UINT64_MAX,
@@ -122,9 +162,16 @@ Result<> Vulkan::draw_frame() noexcept
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = signalSemaphores;
 
-    if (vkQueueSubmit(m_vulkanDevice.get_graphics_queue(), 1, &submitInfo, m_inFlightFences[m_currentFrame]) !=
-        VK_SUCCESS)
+    const VkResult submitResult =
+        vkQueueSubmit(m_vulkanDevice.get_graphics_queue(), 1, &submitInfo, m_inFlightFences[m_currentFrame]);
+    if (submitResult != VK_SUCCESS)
     {
+        fmt::print("Warning: vkQueueSubmit failed with VkResult={}\n", static_cast<int>(submitResult));
+        if (submitResult != VK_ERROR_DEVICE_LOST)
+        {
+            if (auto recover = recreate_swap_chain(); recover)
+                return {};
+        }
         return make_error("Failed to submit draw command buffer", ErrorCode::VulkanDrawFrameFailed);
     }
 
@@ -163,30 +210,59 @@ void Vulkan::wait_idle() noexcept
         vkDeviceWaitIdle(device);
 }
 
-void Vulkan::cleanup() noexcept
+Result<> Vulkan::clear_scene_content() noexcept
+{
+    wait_idle();
+
+    m_renderables.clear();
+    m_totalTriangleCountCached = 0;
+    m_lastVisibleRenderableCount = 0;
+    m_lastCulledRenderableCount = 0;
+    m_lastDrawCallCount = 0;
+    m_lastInstancedBatchCount = 0;
+
+    destroy_meshes();
+    destroy_textures();
+    destroy_material_pool();
+
+    if (auto result = create_default_textures(); !result)
+        return result;
+    if (auto result = create_descriptor_pool(); !result)
+        return result;
+    if (auto result = create_default_material(); !result)
+        return result;
+
+    return {};
+}
+
+void Vulkan::destroy_meshes() noexcept
 {
     VkDevice device = m_vulkanDevice.get_device();
+    if (!device)
+        return;
 
-    if (device)
-        vkDeviceWaitIdle(device);
-
-    // Destroy meshes (use device for vkDestroyBuffer/vkFreeMemory)
     for (auto& mesh : m_meshes)
     {
         if (mesh.indexBuffer != VK_NULL_HANDLE)
-        {
             vkDestroyBuffer(device, mesh.indexBuffer, nullptr);
+        if (mesh.indexBufferMemory != VK_NULL_HANDLE)
             vkFreeMemory(device, mesh.indexBufferMemory, nullptr);
-        }
         if (mesh.vertexBuffer != VK_NULL_HANDLE)
-        {
             vkDestroyBuffer(device, mesh.vertexBuffer, nullptr);
+        if (mesh.vertexBufferMemory != VK_NULL_HANDLE)
             vkFreeMemory(device, mesh.vertexBufferMemory, nullptr);
-        }
     }
     m_meshes.clear();
+    m_meshLookup.clear();
+    m_meshMemoryBytes = 0;
+}
 
-    // Destroy textures
+void Vulkan::destroy_textures() noexcept
+{
+    VkDevice device = m_vulkanDevice.get_device();
+    if (!device)
+        return;
+
     for (auto& tex : m_textures)
     {
         if (tex.imageView != VK_NULL_HANDLE)
@@ -196,15 +272,40 @@ void Vulkan::cleanup() noexcept
         if (tex.memory != VK_NULL_HANDLE)
             vkFreeMemory(device, tex.memory, nullptr);
     }
-    m_textures.clear();
 
-    // Destroy descriptor pool (frees all descriptor sets implicitly)
+    m_textures.clear();
+    m_textureLookup.clear();
+    m_textureMemoryBytes = 0;
+    m_defaultAlbedoTextureIndex = 0;
+    m_defaultNormalTextureIndex = 0;
+}
+
+void Vulkan::destroy_material_pool() noexcept
+{
+    VkDevice device = m_vulkanDevice.get_device();
+    if (!device)
+        return;
+
     if (m_descriptorPool != VK_NULL_HANDLE)
     {
         vkDestroyDescriptorPool(device, m_descriptorPool, nullptr);
         m_descriptorPool = VK_NULL_HANDLE;
     }
     m_materials.clear();
+    m_materialLookup.clear();
+    m_defaultMaterialIndex = 0;
+}
+
+void Vulkan::cleanup() noexcept
+{
+    VkDevice device = m_vulkanDevice.get_device();
+
+    if (device)
+        vkDeviceWaitIdle(device);
+
+    destroy_meshes();
+    destroy_textures();
+    destroy_material_pool();
 
     // Destroy sampler
     if (m_sampler != VK_NULL_HANDLE)
@@ -212,6 +313,21 @@ void Vulkan::cleanup() noexcept
         vkDestroySampler(device, m_sampler, nullptr);
         m_sampler = VK_NULL_HANDLE;
     }
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+    {
+        if (m_instanceBuffers[i] != VK_NULL_HANDLE)
+        {
+            vkDestroyBuffer(device, m_instanceBuffers[i], nullptr);
+            m_instanceBuffers[i] = VK_NULL_HANDLE;
+        }
+        if (m_instanceBufferMemories[i] != VK_NULL_HANDLE)
+        {
+            vkFreeMemory(device, m_instanceBufferMemories[i], nullptr);
+            m_instanceBufferMemories[i] = VK_NULL_HANDLE;
+        }
+    }
+    m_instanceBufferCapacity = 0;
 
     // Destroy sync objects
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
@@ -231,6 +347,13 @@ void Vulkan::cleanup() noexcept
     }
     m_renderFinishedSemaphores.clear();
     m_imagesInFlight.clear();
+
+    if (!m_commandBuffers.empty() && m_vulkanDevice.get_command_pool() != VK_NULL_HANDLE)
+    {
+        vkFreeCommandBuffers(device, m_vulkanDevice.get_command_pool(), static_cast<uint32_t>(m_commandBuffers.size()),
+                             m_commandBuffers.data());
+        m_commandBuffers.clear();
+    }
 
     // Destroy offscreen resources
     cleanup_scene_render_target();
@@ -263,8 +386,56 @@ Result<> Vulkan::create_command_buffers()
     return {};
 }
 
+Result<> Vulkan::ensure_instance_buffer_capacity(std::size_t requiredInstances)
+{
+    if (requiredInstances <= m_instanceBufferCapacity)
+        return {};
+
+    std::size_t newCapacity = std::max<std::size_t>(requiredInstances, 256);
+    if (m_instanceBufferCapacity > 0)
+        newCapacity = std::max(newCapacity, m_instanceBufferCapacity * 2);
+
+    VkDeviceSize bufferSize = static_cast<VkDeviceSize>(sizeof(InstanceData) * newCapacity);
+    std::array<VkBuffer, MAX_FRAMES_IN_FLIGHT> newBuffers{};
+    std::array<VkDeviceMemory, MAX_FRAMES_IN_FLIGHT> newMemories{};
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+    {
+        auto result = m_vulkanDevice.create_buffer(
+            bufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, newBuffers[i], newMemories[i]);
+        if (!result)
+        {
+            VkDevice device = m_vulkanDevice.get_device();
+            for (size_t j = 0; j <= i; ++j)
+            {
+                if (newBuffers[j] != VK_NULL_HANDLE)
+                    vkDestroyBuffer(device, newBuffers[j], nullptr);
+                if (newMemories[j] != VK_NULL_HANDLE)
+                    vkFreeMemory(device, newMemories[j], nullptr);
+            }
+            return make_error(result.error());
+        }
+    }
+
+    VkDevice device = m_vulkanDevice.get_device();
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+    {
+        if (m_instanceBuffers[i] != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, m_instanceBuffers[i], nullptr);
+        if (m_instanceBufferMemories[i] != VK_NULL_HANDLE)
+            vkFreeMemory(device, m_instanceBufferMemories[i], nullptr);
+        m_instanceBuffers[i] = newBuffers[i];
+        m_instanceBufferMemories[i] = newMemories[i];
+    }
+
+    m_instanceBufferCapacity = newCapacity;
+    return {};
+}
+
 Result<> Vulkan::record_command_buffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) noexcept
 {
+    VkDevice device = m_vulkanDevice.get_device();
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
@@ -284,26 +455,169 @@ Result<> Vulkan::record_command_buffer(VkCommandBuffer commandBuffer, uint32_t i
         renderPassInfo.renderArea.offset = {0, 0};
         renderPassInfo.renderArea.extent = {m_sceneRenderWidth, m_sceneRenderHeight};
 
-        // Clear values: color + depth (+ MSAA color if applicable, but clear order matches attachment order)
-        std::vector<VkClearValue> clearValues;
+        // Clear values: color + depth (+ MSAA color if applicable).
+        std::array<VkClearValue, 3> clearValues{};
+        uint32_t clearValueCount = 2;
         if (m_msaaSamples != VK_SAMPLE_COUNT_1_BIT)
         {
             // Attachments: 0=MSAA color, 1=MSAA depth, 2=resolve color
-            clearValues.resize(3);
             clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
             clearValues[1].depthStencil = {1.0f, 0};
             clearValues[2].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+            clearValueCount = 3;
         }
         else
         {
             // Attachments: 0=color, 1=depth
-            clearValues.resize(2);
             clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
             clearValues[1].depthStencil = {1.0f, 0};
         }
 
-        renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+        renderPassInfo.clearValueCount = clearValueCount;
         renderPassInfo.pClearValues = clearValues.data();
+
+        // Use view/projection matrices set externally by the camera
+        XMMATRIX view = XMLoadFloat4x4(&m_viewMatrix);
+        XMMATRIX proj = XMLoadFloat4x4(&m_projMatrix);
+        XMMATRIX viewProj = XMMatrixMultiply(view, proj);
+
+        // Build visible instances and instancing batches.
+        m_instanceDataScratch.clear();
+        m_instanceBatchesScratch.clear();
+        m_instanceDataScratch.reserve(m_renderables.size());
+        m_instanceBatchesScratch.reserve(m_renderables.size());
+
+        // The renderer stores a Vulkan-flipped projection matrix (Y *= -1).
+        // DirectXCollision frustum extraction expects a regular projection matrix.
+        // Remove the flip for culling to avoid rejecting everything.
+        const XMMATRIX vulkanFlip = XMMatrixScaling(1.0f, -1.0f, 1.0f);
+        const XMMATRIX cullProj = XMMatrixMultiply(proj, vulkanFlip);
+
+        BoundingFrustum viewFrustum{};
+        BoundingFrustum::CreateFromMatrix(viewFrustum, cullProj, true);
+
+        uint32_t culledRenderables = 0;
+        for (const auto& renderable : m_renderables)
+        {
+            if (renderable.meshIndex >= m_meshes.size())
+                continue;
+
+            const auto& mesh = m_meshes[renderable.meshIndex];
+            if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE)
+                continue;
+
+            XMMATRIX world = XMLoadFloat4x4(&renderable.worldMatrix);
+            XMVECTOR center = XMVectorSet(mesh.boundsCenter.x, mesh.boundsCenter.y, mesh.boundsCenter.z, 1.0f);
+            XMVECTOR centerWorld = XMVector3TransformCoord(center, world);
+            XMVECTOR centerView = XMVector3TransformCoord(centerWorld, view);
+
+            const float scaleX = XMVectorGetX(XMVector3Length(world.r[0]));
+            const float scaleY = XMVectorGetX(XMVector3Length(world.r[1]));
+            const float scaleZ = XMVectorGetX(XMVector3Length(world.r[2]));
+            const float maxScale = std::max(scaleX, std::max(scaleY, scaleZ));
+
+            BoundingSphere sphere{};
+            XMStoreFloat3(&sphere.Center, centerView);
+            sphere.Radius = mesh.boundsRadius * maxScale;
+
+            if (viewFrustum.Contains(sphere) == DISJOINT)
+            {
+                ++culledRenderables;
+                continue;
+            }
+
+            uint32_t materialIndex = renderable.materialIndex;
+            if (materialIndex >= m_materials.size())
+                materialIndex = m_defaultMaterialIndex;
+
+            XMMATRIX mvp = XMMatrixMultiply(world, viewProj);
+            InstanceData instanceData{};
+            XMStoreFloat4x4(&instanceData.mvp, mvp);
+            instanceData.model = renderable.worldMatrix;
+
+            const uint32_t firstInstance = static_cast<uint32_t>(m_instanceDataScratch.size());
+            m_instanceDataScratch.push_back(instanceData);
+
+            if (!m_instanceBatchesScratch.empty())
+            {
+                auto& lastBatch = m_instanceBatchesScratch.back();
+                if (lastBatch.meshIndex == renderable.meshIndex && lastBatch.materialIndex == materialIndex)
+                {
+                    ++lastBatch.instanceCount;
+                    continue;
+                }
+            }
+
+            m_instanceBatchesScratch.push_back(
+                InstanceBatch{renderable.meshIndex, materialIndex, firstInstance, 1});
+        }
+
+        // Safety fallback: if culling rejected everything unexpectedly, render all.
+        if (m_instanceDataScratch.empty() && !m_renderables.empty())
+        {
+            culledRenderables = 0;
+            m_instanceDataScratch.clear();
+            m_instanceBatchesScratch.clear();
+            m_instanceDataScratch.reserve(m_renderables.size());
+            m_instanceBatchesScratch.reserve(m_renderables.size());
+
+            for (const auto& renderable : m_renderables)
+            {
+                if (renderable.meshIndex >= m_meshes.size())
+                    continue;
+
+                const auto& mesh = m_meshes[renderable.meshIndex];
+                if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE)
+                    continue;
+
+                XMMATRIX world = XMLoadFloat4x4(&renderable.worldMatrix);
+                XMMATRIX mvp = XMMatrixMultiply(world, viewProj);
+
+                InstanceData instanceData{};
+                XMStoreFloat4x4(&instanceData.mvp, mvp);
+                instanceData.model = renderable.worldMatrix;
+
+                uint32_t materialIndex = renderable.materialIndex;
+                if (materialIndex >= m_materials.size())
+                    materialIndex = m_defaultMaterialIndex;
+
+                const uint32_t firstInstance = static_cast<uint32_t>(m_instanceDataScratch.size());
+                m_instanceDataScratch.push_back(instanceData);
+
+                if (!m_instanceBatchesScratch.empty())
+                {
+                    auto& lastBatch = m_instanceBatchesScratch.back();
+                    if (lastBatch.meshIndex == renderable.meshIndex && lastBatch.materialIndex == materialIndex)
+                    {
+                        ++lastBatch.instanceCount;
+                        continue;
+                    }
+                }
+
+                m_instanceBatchesScratch.push_back(
+                    InstanceBatch{renderable.meshIndex, materialIndex, firstInstance, 1});
+            }
+        }
+
+        m_lastVisibleRenderableCount = static_cast<uint32_t>(m_instanceDataScratch.size());
+        m_lastCulledRenderableCount = culledRenderables;
+        m_lastInstancedBatchCount = static_cast<uint32_t>(m_instanceBatchesScratch.size());
+        m_lastDrawCallCount = 0;
+
+        if (!m_instanceDataScratch.empty())
+        {
+            if (auto result = ensure_instance_buffer_capacity(m_instanceDataScratch.size()); !result)
+                return result;
+
+            void* mapped = nullptr;
+            VkDeviceSize dataSize = static_cast<VkDeviceSize>(sizeof(InstanceData) * m_instanceDataScratch.size());
+            if (vkMapMemory(device, m_instanceBufferMemories[m_currentFrame], 0, dataSize, 0, &mapped) != VK_SUCCESS)
+            {
+                return make_error("Failed to map instance buffer memory", ErrorCode::VulkanMemoryAllocationFailed);
+            }
+            std::memcpy(mapped, m_instanceDataScratch.data(), static_cast<size_t>(dataSize));
+            vkUnmapMemory(device, m_instanceBufferMemories[m_currentFrame]);
+        }
 
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -323,40 +637,19 @@ Result<> Vulkan::record_command_buffer(VkCommandBuffer commandBuffer, uint32_t i
         scissor.extent = {m_sceneRenderWidth, m_sceneRenderHeight};
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-        // Use view/projection matrices set externally by the camera
-        XMMATRIX view = XMLoadFloat4x4(&m_viewMatrix);
-        XMMATRIX proj = XMLoadFloat4x4(&m_projMatrix);
-        XMMATRIX viewProj = XMMatrixMultiply(view, proj);
-
         VkPipelineLayout pipelineLayout = m_pipeline.get_pipeline_layout();
 
-        // Draw all renderables
-        for (const auto& renderable : m_renderables)
+        for (const auto& batch : m_instanceBatchesScratch)
         {
-            if (renderable.meshIndex >= m_meshes.size())
+            if (batch.meshIndex >= m_meshes.size())
                 continue;
 
-            const auto& mesh = m_meshes[renderable.meshIndex];
+            const auto& mesh = m_meshes[batch.meshIndex];
             if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE)
                 continue;
 
-            XMMATRIX world = XMLoadFloat4x4(&renderable.worldMatrix);
-            XMMATRIX mvp = XMMatrixMultiply(world, viewProj);
-
-            // Push constants: MVP (offset 0) + Model (offset 64)
-            struct PushConstants
-            {
-                XMFLOAT4X4 mvp;
-                XMFLOAT4X4 model;
-            } pushData;
-            XMStoreFloat4x4(&pushData.mvp, mvp);
-            pushData.model = renderable.worldMatrix;
-
-            vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants),
-                               &pushData);
-
             // Bind material descriptor set
-            uint32_t matIdx = renderable.materialIndex;
+            uint32_t matIdx = batch.materialIndex;
             if (matIdx < m_materials.size())
             {
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1,
@@ -369,64 +662,43 @@ Result<> Vulkan::record_command_buffer(VkCommandBuffer commandBuffer, uint32_t i
                                         &m_materials[m_defaultMaterialIndex].descriptorSet, 0, nullptr);
             }
 
-            VkBuffer vertexBuffers[] = {mesh.vertexBuffer};
-            VkDeviceSize offsets[] = {0};
-            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+            if (m_instanceBuffers[m_currentFrame] == VK_NULL_HANDLE)
+                continue;
+
+            std::array<VkBuffer, 2> vertexBuffers{mesh.vertexBuffer, m_instanceBuffers[m_currentFrame]};
+            std::array<VkDeviceSize, 2> offsets{0, 0};
+            vkCmdBindVertexBuffers(commandBuffer, 0, static_cast<uint32_t>(vertexBuffers.size()), vertexBuffers.data(),
+                                   offsets.data());
 
             vkCmdBindIndexBuffer(commandBuffer, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
-            vkCmdDrawIndexed(commandBuffer, mesh.indexCount, 1, 0, 0, 0);
+            vkCmdDrawIndexed(commandBuffer, mesh.indexCount, batch.instanceCount, 0, 0, batch.firstInstance);
+            ++m_lastDrawCallCount;
         }
 
         vkCmdEndRenderPass(commandBuffer);
     }
 
-    // ==========================================
-    // Blit: scene color -> swapchain image
-    // ==========================================
+    // Scene color image is sampled in the ImGui viewport pass.
+    // Add an explicit visibility barrier from color output writes to fragment shader reads.
     {
-        VkImage swapchainImage = m_swapchain.get_images()[imageIndex];
+        VkImageMemoryBarrier sceneReadBarrier{};
+        sceneReadBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        sceneReadBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        sceneReadBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        sceneReadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        sceneReadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        sceneReadBarrier.image = m_sceneColorImage;
+        sceneReadBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        sceneReadBarrier.subresourceRange.baseMipLevel = 0;
+        sceneReadBarrier.subresourceRange.levelCount = 1;
+        sceneReadBarrier.subresourceRange.baseArrayLayer = 0;
+        sceneReadBarrier.subresourceRange.layerCount = 1;
+        sceneReadBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        sceneReadBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
-        // Transition swapchain image: UNDEFINED -> TRANSFER_DST_OPTIMAL
-        VkImageMemoryBarrier barrier{};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = swapchainImage;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = 1;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
-        barrier.srcAccessMask = 0;
-        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
-                             nullptr, 0, nullptr, 1, &barrier);
-
-        VkExtent2D swapExtent = m_swapchain.get_extent();
-
-        VkImageBlit blitRegion{};
-        blitRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        blitRegion.srcSubresource.mipLevel = 0;
-        blitRegion.srcSubresource.baseArrayLayer = 0;
-        blitRegion.srcSubresource.layerCount = 1;
-        blitRegion.srcOffsets[0] = {0, 0, 0};
-        blitRegion.srcOffsets[1] = {static_cast<int32_t>(m_sceneRenderWidth), static_cast<int32_t>(m_sceneRenderHeight),
-                                    1};
-
-        blitRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        blitRegion.dstSubresource.mipLevel = 0;
-        blitRegion.dstSubresource.baseArrayLayer = 0;
-        blitRegion.dstSubresource.layerCount = 1;
-        blitRegion.dstOffsets[0] = {0, 0, 0};
-        blitRegion.dstOffsets[1] = {static_cast<int32_t>(swapExtent.width), static_cast<int32_t>(swapExtent.height), 1};
-
-        // Scene color image is already TRANSFER_SRC_OPTIMAL from scene render pass finalLayout
-        vkCmdBlitImage(commandBuffer, m_sceneColorImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchainImage,
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blitRegion, VK_FILTER_LINEAR);
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &sceneReadBarrier);
     }
 
     // ==========================================
@@ -441,9 +713,10 @@ Result<> Vulkan::record_command_buffer(VkCommandBuffer commandBuffer, uint32_t i
         renderPassInfo.framebuffer = m_swapchain.get_ui_framebuffer(imageIndex);
         renderPassInfo.renderArea.offset = {0, 0};
         renderPassInfo.renderArea.extent = swapExtent;
-        // No clear — loadOp is LOAD
-        renderPassInfo.clearValueCount = 0;
-        renderPassInfo.pClearValues = nullptr;
+        VkClearValue uiClearColor{};
+        uiClearColor.color = {{0.06f, 0.06f, 0.07f, 1.0f}};
+        renderPassInfo.clearValueCount = 1;
+        renderPassInfo.pClearValues = &uiClearColor;
 
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -496,11 +769,39 @@ Result<> Vulkan::create_sync_objects()
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
+    auto rollback_sync_objects = [&]() {
+        for (VkSemaphore semaphore : m_imageAvailableSemaphores)
+        {
+            if (semaphore != VK_NULL_HANDLE)
+                vkDestroySemaphore(device, semaphore, nullptr);
+        }
+        for (VkFence fence : m_inFlightFences)
+        {
+            if (fence != VK_NULL_HANDLE)
+                vkDestroyFence(device, fence, nullptr);
+        }
+        for (VkSemaphore semaphore : m_renderFinishedSemaphores)
+        {
+            if (semaphore != VK_NULL_HANDLE)
+                vkDestroySemaphore(device, semaphore, nullptr);
+        }
+        m_imageAvailableSemaphores.clear();
+        m_inFlightFences.clear();
+        m_renderFinishedSemaphores.clear();
+        m_imagesInFlight.clear();
+    };
+
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &m_imageAvailableSemaphores[i]) != VK_SUCCESS ||
-            vkCreateFence(device, &fenceInfo, nullptr, &m_inFlightFences[i]) != VK_SUCCESS)
+        if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &m_imageAvailableSemaphores[i]) != VK_SUCCESS)
         {
+            rollback_sync_objects();
+            return make_error("Failed to create synchronization objects for a frame",
+                              ErrorCode::VulkanSyncObjectsCreationFailed);
+        }
+        if (vkCreateFence(device, &fenceInfo, nullptr, &m_inFlightFences[i]) != VK_SUCCESS)
+        {
+            rollback_sync_objects();
             return make_error("Failed to create synchronization objects for a frame",
                               ErrorCode::VulkanSyncObjectsCreationFailed);
         }
@@ -510,6 +811,7 @@ Result<> Vulkan::create_sync_objects()
     {
         if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &m_renderFinishedSemaphores[i]) != VK_SUCCESS)
         {
+            rollback_sync_objects();
             return make_error("Failed to create render finished semaphore", ErrorCode::VulkanSyncObjectsCreationFailed);
         }
     }
@@ -532,13 +834,6 @@ Result<> Vulkan::recreate_swap_chain()
 
     vkDeviceWaitIdle(device);
 
-    // Destroy old per-image semaphores
-    for (size_t i = 0; i < m_renderFinishedSemaphores.size(); i++)
-    {
-        vkDestroySemaphore(device, m_renderFinishedSemaphores[i], nullptr);
-    }
-    m_renderFinishedSemaphores.clear();
-
     if (auto result = m_swapchain.recreate(); !result)
         return result;
 
@@ -548,23 +843,36 @@ Result<> Vulkan::recreate_swap_chain()
     if (auto result = create_scene_render_target(); !result)
         return result;
 
-    // Recreate per-image sync objects for the new swapchain
+    // Recreate per-image sync objects for the new swapchain.
+    // Build the new set first, then atomically swap and destroy old ones.
     uint32_t imageCount = m_swapchain.get_image_count();
-    m_renderFinishedSemaphores.resize(imageCount);
-    m_imagesInFlight.clear();
-    m_imagesInFlight.resize(imageCount, VK_NULL_HANDLE);
+    std::vector<VkSemaphore> newRenderFinishedSemaphores(imageCount, VK_NULL_HANDLE);
+    std::vector<VkFence> newImagesInFlight(imageCount, VK_NULL_HANDLE);
 
     VkSemaphoreCreateInfo semaphoreInfo{};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
     for (size_t i = 0; i < imageCount; i++)
     {
-        if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &m_renderFinishedSemaphores[i]) != VK_SUCCESS)
+        if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &newRenderFinishedSemaphores[i]) != VK_SUCCESS)
         {
+            for (VkSemaphore semaphore : newRenderFinishedSemaphores)
+            {
+                if (semaphore != VK_NULL_HANDLE)
+                    vkDestroySemaphore(device, semaphore, nullptr);
+            }
             return make_error("Failed to recreate render finished semaphore",
                               ErrorCode::VulkanSyncObjectsCreationFailed);
         }
     }
+
+    for (VkSemaphore semaphore : m_renderFinishedSemaphores)
+    {
+        if (semaphore != VK_NULL_HANDLE)
+            vkDestroySemaphore(device, semaphore, nullptr);
+    }
+    m_renderFinishedSemaphores = std::move(newRenderFinishedSemaphores);
+    m_imagesInFlight = std::move(newImagesInFlight);
 
     // Notify listeners (e.g., ImGui) about the swapchain recreation
     if (m_swapchainRecreatedCallback)
@@ -582,12 +890,23 @@ Result<uint32_t> Vulkan::upload_mesh(const MeshData& meshData)
     if (meshData.vertices.empty())
         return make_error("MeshData has no vertices", ErrorCode::AssetInvalidData);
 
+    std::string meshKey;
+    if (!meshData.sourcePath.empty())
+    {
+        meshKey = meshData.sourcePath;
+        meshKey.push_back('|');
+        meshKey += meshData.name;
+        if (const auto it = m_meshLookup.find(meshKey); it != m_meshLookup.end())
+            return it->second;
+    }
+
     VkDevice device = m_vulkanDevice.get_device();
     Mesh mesh{};
     mesh.indexCount = static_cast<uint32_t>(meshData.indices.size());
 
     // --- Vertex buffer ---
     VkDeviceSize bufferSize = sizeof(meshData.vertices[0]) * meshData.vertices.size();
+    mesh.vertexBufferBytes = bufferSize;
     VkBuffer stagingBuffer{};
     VkDeviceMemory stagingBufferMemory{};
 
@@ -630,6 +949,7 @@ Result<uint32_t> Vulkan::upload_mesh(const MeshData& meshData)
 
     // --- Index buffer ---
     VkDeviceSize indexBufferSize = sizeof(meshData.indices[0]) * meshData.indices.size();
+    mesh.indexBufferBytes = indexBufferSize;
     if (auto res =
             m_vulkanDevice.create_buffer(indexBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -666,8 +986,21 @@ Result<uint32_t> Vulkan::upload_mesh(const MeshData& meshData)
     vkDestroyBuffer(device, stagingBuffer, nullptr);
     vkFreeMemory(device, stagingBufferMemory, nullptr);
 
+    mesh.boundsCenter = {
+        (meshData.boundsMin.x + meshData.boundsMax.x) * 0.5f,
+        (meshData.boundsMin.y + meshData.boundsMax.y) * 0.5f,
+        (meshData.boundsMin.z + meshData.boundsMax.z) * 0.5f,
+    };
+    const float halfX = (meshData.boundsMax.x - meshData.boundsMin.x) * 0.5f;
+    const float halfY = (meshData.boundsMax.y - meshData.boundsMin.y) * 0.5f;
+    const float halfZ = (meshData.boundsMax.z - meshData.boundsMin.z) * 0.5f;
+    mesh.boundsRadius = std::sqrt(halfX * halfX + halfY * halfY + halfZ * halfZ);
+
     uint32_t meshIndex = static_cast<uint32_t>(m_meshes.size());
     m_meshes.push_back(mesh);
+    m_meshMemoryBytes += static_cast<uint64_t>(mesh.vertexBufferBytes + mesh.indexBufferBytes);
+    if (!meshKey.empty())
+        m_meshLookup.emplace(std::move(meshKey), meshIndex);
     return meshIndex;
 }
 
@@ -736,6 +1069,12 @@ Result<uint32_t> Vulkan::upload_texture(const TextureData& textureData)
 {
     if (textureData.pixels.empty() || textureData.width == 0 || textureData.height == 0)
         return make_error("TextureData has no pixel data", ErrorCode::AssetInvalidData);
+
+    if (!textureData.sourcePath.empty())
+    {
+        if (const auto it = m_textureLookup.find(textureData.sourcePath); it != m_textureLookup.end())
+            return it->second;
+    }
 
     VkDevice device = m_vulkanDevice.get_device();
     VkDeviceSize imageSize = static_cast<VkDeviceSize>(textureData.width) * textureData.height * 4;
@@ -825,9 +1164,14 @@ Result<uint32_t> Vulkan::upload_texture(const TextureData& textureData)
         return make_error(viewResult.error());
     }
     texture.imageView = viewResult.value();
+    texture.width = textureData.width;
+    texture.height = textureData.height;
 
     uint32_t textureIndex = static_cast<uint32_t>(m_textures.size());
     m_textures.push_back(texture);
+    m_textureMemoryBytes += static_cast<uint64_t>(imageSize);
+    if (!textureData.sourcePath.empty())
+        m_textureLookup.emplace(textureData.sourcePath, textureIndex);
     return textureIndex;
 }
 
@@ -871,6 +1215,11 @@ Result<uint32_t> Vulkan::upload_material(uint32_t albedoTextureIndex, uint32_t n
 {
     if (albedoTextureIndex >= m_textures.size() || normalTextureIndex >= m_textures.size())
         return make_error("Texture index out of range", ErrorCode::AssetInvalidData);
+
+    const uint64_t materialKey = (static_cast<uint64_t>(albedoTextureIndex) << 32U) |
+                                 static_cast<uint64_t>(normalTextureIndex);
+    if (const auto it = m_materialLookup.find(materialKey); it != m_materialLookup.end())
+        return it->second;
 
     VkDevice device = m_vulkanDevice.get_device();
 
@@ -919,6 +1268,7 @@ Result<uint32_t> Vulkan::upload_material(uint32_t albedoTextureIndex, uint32_t n
 
     uint32_t materialIndex = static_cast<uint32_t>(m_materials.size());
     m_materials.push_back(material);
+    m_materialLookup.emplace(materialKey, materialIndex);
     return materialIndex;
 }
 
@@ -1028,7 +1378,7 @@ Result<> Vulkan::create_scene_render_pass()
         attachments[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         attachments[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         attachments[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        attachments[2].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        attachments[2].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
         VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
         VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
@@ -1068,7 +1418,7 @@ Result<> Vulkan::create_scene_render_pass()
     else
     {
         // Non-MSAA render pass: 2 attachments
-        // 0: Color (samples=1, CLEAR, STORE, finalLayout=TRANSFER_SRC)
+        // 0: Color (samples=1, CLEAR, STORE, finalLayout=SHADER_READ_ONLY)
         // 1: Depth (samples=1, CLEAR)
         std::array<VkAttachmentDescription, 2> attachments{};
 
@@ -1080,7 +1430,7 @@ Result<> Vulkan::create_scene_render_pass()
         attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        attachments[0].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
         // Depth
         attachments[1].format = depthFormat;
@@ -1139,10 +1489,11 @@ Result<> Vulkan::create_scene_render_target()
         return make_error(depthFormatResult.error());
     VkFormat depthFormat = depthFormatResult.value();
 
-    // Always create the resolve/final color image (1x sample, TRANSFER_SRC for blit)
+    // Resolve/final color image (1x sample), sampled by ImGui viewport.
     if (auto res =
             m_vulkanDevice.create_image(m_sceneRenderWidth, m_sceneRenderHeight, colorFormat, VK_IMAGE_TILING_OPTIMAL,
-                                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                            VK_IMAGE_USAGE_SAMPLED_BIT,
                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_sceneColorImage, m_sceneColorMemory);
         !res)
         return res;
@@ -1293,35 +1644,54 @@ void Vulkan::cleanup_scene_render_pass()
 
 void Vulkan::set_vsync(KHR_Settings mode) noexcept
 {
-    if (m_vsyncEnabled && mode == KHR_Settings::VSync)
+    VkPresentModeKHR requestedMode = VK_PRESENT_MODE_FIFO_KHR;
+    switch (mode)
+    {
+    case KHR_Settings::VSync:
+        requestedMode = VK_PRESENT_MODE_FIFO_KHR;
+        break;
+    case KHR_Settings::Triple_Buffering:
+        requestedMode = VK_PRESENT_MODE_MAILBOX_KHR;
+        break;
+    case KHR_Settings::Immediate:
+        requestedMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        break;
+    default:
+        requestedMode = VK_PRESENT_MODE_FIFO_KHR;
+        break;
+    }
+
+    const VkPresentModeKHR currentMode = m_swapchain.get_present_mode();
+    if (currentMode == requestedMode)
+    {
+        m_vsyncEnabled = (currentMode == VK_PRESENT_MODE_FIFO_KHR || currentMode == VK_PRESENT_MODE_FIFO_RELAXED_KHR);
         return;
+    }
+
+    const bool previousVsync = m_vsyncEnabled;
+    m_swapchain.set_desired_present_mode(requestedMode);
 
     VkDevice device = m_vulkanDevice.get_device();
     vkDeviceWaitIdle(device);
 
-    if (mode == KHR_Settings::VSync)
+    // Apply immediately so UI/renderer state stays aligned with real swapchain mode.
+    if (auto result = recreate_swap_chain(); !result)
     {
-        m_vsyncEnabled = true;
-        m_swapchain.set_desired_present_mode(VK_PRESENT_MODE_FIFO_KHR);
+        fmt::print("Warning: failed to apply present mode change: {}\n", result.error().message);
+        m_vsyncEnabled = previousVsync;
+        // Fall back to deferred recreate retry on next frame.
+        m_framebufferResized = true;
+        return;
     }
-    else if (mode == KHR_Settings::Triple_Buffering)
-    {
-        m_vsyncEnabled = false;
-        // Prefer mailbox (triple buffering), will fall back to auto-select
-        m_swapchain.set_desired_present_mode(VK_PRESENT_MODE_MAILBOX_KHR);
-    }
-    else if (mode == KHR_Settings::Immediate)
-    {
-        m_vsyncEnabled = false;
-        m_swapchain.set_desired_present_mode(VK_PRESENT_MODE_IMMEDIATE_KHR);
-    }
-    // Swapchain will pick up the new present mode on next recreate
-    m_framebufferResized = true; // Forces swapchain recreation
+
+    const VkPresentModeKHR appliedMode = m_swapchain.get_present_mode();
+    m_vsyncEnabled = (appliedMode == VK_PRESENT_MODE_FIFO_KHR || appliedMode == VK_PRESENT_MODE_FIFO_RELAXED_KHR);
 }
 
 bool Vulkan::get_vsync() const noexcept
 {
-    return m_vsyncEnabled;
+    const VkPresentModeKHR mode = m_swapchain.get_present_mode();
+    return (mode == VK_PRESENT_MODE_FIFO_KHR || mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR);
 }
 
 void Vulkan::set_msaa_samples(int samples) noexcept
@@ -1351,20 +1721,37 @@ void Vulkan::set_msaa_samples(int samples) noexcept
     if (desired == m_msaaSamples)
         return;
 
-    m_msaaSamples = desired;
+    const VkSampleCountFlagBits previous = m_msaaSamples;
     VkDevice device = m_vulkanDevice.get_device();
     vkDeviceWaitIdle(device);
 
-    // Need to recreate: scene render pass, scene render target, pipeline
-    cleanup_scene_render_target();
-    cleanup_scene_render_pass();
-    m_pipeline.cleanup();
+    auto rebuild_for_msaa = [&](VkSampleCountFlagBits targetSamples) -> Result<> {
+        m_msaaSamples = targetSamples;
+        cleanup_scene_render_target();
+        cleanup_scene_render_pass();
+        m_pipeline.cleanup();
 
-    // Recreate in order
-    (void)create_scene_render_pass();
-    compute_scene_render_size();
-    (void)create_scene_render_target();
-    (void)m_pipeline.initialize(m_sceneRenderPass, m_msaaSamples, m_vertSpirv, m_fragSpirv);
+        if (auto result = create_scene_render_pass(); !result)
+            return result;
+        compute_scene_render_size();
+        if (auto result = create_scene_render_target(); !result)
+            return result;
+        return m_pipeline.initialize(m_sceneRenderPass, m_msaaSamples, m_vertSpirv, m_fragSpirv);
+    };
+
+    if (auto result = rebuild_for_msaa(desired); !result)
+    {
+        fmt::print("Warning: failed to apply MSAA setting: {}\n", result.error().message);
+        if (auto rollback = rebuild_for_msaa(previous); !rollback)
+        {
+            fmt::print("Warning: failed to restore previous MSAA state: {}\n", rollback.error().message);
+            if (auto recreate = recreate_swap_chain(); !recreate)
+            {
+                fmt::print("Warning: failed to recover after MSAA setting failure: {}\n", recreate.error().message);
+                m_framebufferResized = true;
+            }
+        }
+    }
 }
 
 int Vulkan::get_msaa_samples() const noexcept
@@ -1375,17 +1762,13 @@ int Vulkan::get_msaa_samples() const noexcept
 void Vulkan::set_render_scale(float scale) noexcept
 {
     scale = std::clamp(scale, 0.25f, 2.0f);
-    if (scale == m_renderScale)
+    if (std::fabs(scale - m_renderScale) < 0.0001f)
         return;
 
     m_renderScale = scale;
-    VkDevice device = m_vulkanDevice.get_device();
-    vkDeviceWaitIdle(device);
-
-    // Only need to recreate scene render target (render pass is unchanged)
-    cleanup_scene_render_target();
-    compute_scene_render_size();
-    (void)create_scene_render_target();
+    // Defer expensive resource rebuild to draw-frame boundary.
+    // This avoids mid-frame image/view churn that can cause submit failures.
+    m_framebufferResized = true;
 }
 
 float Vulkan::get_render_scale() const noexcept

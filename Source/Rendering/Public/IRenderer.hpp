@@ -47,7 +47,11 @@ class NOC_EXPORT IRenderer
     virtual void set_view_projection(const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& proj) noexcept = 0;
 
     /// Set the list of renderables to draw this frame.
-    virtual void set_renderables(std::vector<Renderable> renderables) noexcept = 0;
+    virtual void set_renderables(const std::vector<Renderable>& renderables) noexcept = 0;
+
+    /// Release scene-owned GPU content while keeping renderer core state alive.
+    /// Intended for level/project transitions.
+    virtual Result<> clear_scene_content() noexcept = 0;
 
     /// Notify the renderer that the window framebuffer was resized.
     virtual void on_framebuffer_resized() noexcept = 0;

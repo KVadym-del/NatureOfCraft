@@ -36,7 +36,7 @@ class NOC_EXPORT World
     void remove_parent(entt::entity child);
 
     /// Returns all root-level entities (those with parent == entt::null).
-    std::vector<entt::entity> get_root_entities();
+    const std::vector<entt::entity>& get_root_entities();
 
     // ── Systems (per-frame) ───────────────────────────────────────────
 
@@ -44,7 +44,7 @@ class NOC_EXPORT World
     void update_world_matrices();
 
     /// Builds a flat list of Renderables from all entities with MeshComponent + WorldMatrixCache.
-    std::vector<Renderable> collect_renderables();
+    const std::vector<Renderable>& collect_renderables();
 
     /// Returns the first entity whose CameraComponent has isActive == true, or entt::null.
     entt::entity get_active_camera();
@@ -61,9 +61,13 @@ class NOC_EXPORT World
     }
 
   private:
+    void rebuild_root_entities_cache();
     void update_world_matrices_recursive(entt::entity entity, const DirectX::XMMATRIX& parentWorld);
 
     entt::registry m_registry;
+    std::vector<entt::entity> m_rootEntitiesCache;
+    bool m_rootEntitiesDirty{true};
+    std::vector<Renderable> m_renderablesCache;
 };
 
 NOC_RESTORE_DLL_WARNINGS

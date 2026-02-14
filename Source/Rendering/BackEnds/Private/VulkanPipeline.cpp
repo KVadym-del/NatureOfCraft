@@ -2,10 +2,8 @@
 #include "../../Public/Mesh.hpp"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
-
-#include <DirectXMath.h>
-using namespace DirectX;
 
 VulkanPipeline::~VulkanPipeline()
 {
@@ -48,14 +46,42 @@ Result<> VulkanPipeline::initialize(VkRenderPass renderPass, VkSampleCountFlagBi
         fragShaderStageInfo,
     };
 
-    // 2. Vertex Input State
-    auto bindingDescription = Vertex::getBindingDescription();
-    auto attributeDescriptions = Vertex::getAttributeDescriptions();
+    // 2. Vertex Input State (vertex + per-instance transform data)
+    auto vertexBindingDescription = Vertex::getBindingDescription();
+    auto vertexAttributeDescriptions = Vertex::getAttributeDescriptions();
+
+    std::array<VkVertexInputBindingDescription, 2> bindingDescriptions{};
+    bindingDescriptions[0] = vertexBindingDescription;
+    bindingDescriptions[1].binding = 1;
+    bindingDescriptions[1].stride = sizeof(float) * 32; // mat4 mvp + mat4 model
+    bindingDescriptions[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+
+    std::array<VkVertexInputAttributeDescription, 12> attributeDescriptions{};
+    for (size_t i = 0; i < vertexAttributeDescriptions.size(); ++i)
+        attributeDescriptions[i] = vertexAttributeDescriptions[i];
+
+    const uint32_t vec4Size = sizeof(float) * 4;
+    // mvp rows (locations 4..7)
+    for (uint32_t i = 0; i < 4; ++i)
+    {
+        attributeDescriptions[4 + i].binding = 1;
+        attributeDescriptions[4 + i].location = 4 + i;
+        attributeDescriptions[4 + i].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        attributeDescriptions[4 + i].offset = vec4Size * i;
+    }
+    // model rows (locations 8..11)
+    for (uint32_t i = 0; i < 4; ++i)
+    {
+        attributeDescriptions[8 + i].binding = 1;
+        attributeDescriptions[8 + i].location = 8 + i;
+        attributeDescriptions[8 + i].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        attributeDescriptions[8 + i].offset = (vec4Size * 4) + (vec4Size * i);
+    }
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputInfo.vertexBindingDescriptionCount = 1;
-    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+    vertexInputInfo.vertexBindingDescriptionCount = static_cast<uint32_t>(bindingDescriptions.size());
+    vertexInputInfo.pVertexBindingDescriptions = bindingDescriptions.data();
     vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
     vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
@@ -114,11 +140,6 @@ Result<> VulkanPipeline::initialize(VkRenderPass renderPass, VkSampleCountFlagBi
     dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
     dynamicState.pDynamicStates = dynamicStates.data();
 
-    VkPushConstantRange pushConstantRange{};
-    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    pushConstantRange.offset = 0;
-    pushConstantRange.size = 2 * sizeof(XMFLOAT4X4); // MVP + Model matrix
-
     // Descriptor set layout: binding 0 = albedo sampler, binding 1 = normal sampler
     std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
     bindings[0].binding = 0;
@@ -150,8 +171,8 @@ Result<> VulkanPipeline::initialize(VkRenderPass renderPass, VkSampleCountFlagBi
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1;
     pipelineLayoutInfo.pSetLayouts = &m_descriptorSetLayout;
-    pipelineLayoutInfo.pushConstantRangeCount = 1;
-    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+    pipelineLayoutInfo.pushConstantRangeCount = 0;
+    pipelineLayoutInfo.pPushConstantRanges = nullptr;
 
     if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &m_pipelineLayout) != VK_SUCCESS)
     {

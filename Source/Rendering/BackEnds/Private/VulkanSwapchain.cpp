@@ -188,6 +188,15 @@ Result<> VulkanSwapchain::create_image_views()
 
         if (vkCreateImageView(device, &createInfo, nullptr, &m_swapChainImageViews[i]) != VK_SUCCESS)
         {
+            for (size_t j = 0; j < i; ++j)
+            {
+                if (m_swapChainImageViews[j] != VK_NULL_HANDLE)
+                {
+                    vkDestroyImageView(device, m_swapChainImageViews[j], nullptr);
+                    m_swapChainImageViews[j] = VK_NULL_HANDLE;
+                }
+            }
+            m_swapChainImageViews.clear();
             return make_error("Failed to create image views", ErrorCode::VulkanImageViewCreationFailed);
         }
     }
@@ -199,15 +208,15 @@ Result<> VulkanSwapchain::create_ui_render_pass()
 {
     VkDevice device = m_device.get_device();
 
-    // UI render pass: color only (no depth), loads existing content (from blit), outputs to present.
+    // UI render pass: color only (no depth), clears swapchain image and draws ImGui.
     VkAttachmentDescription colorAttachment{};
     colorAttachment.format = m_swapChainImageFormat;
     colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; // Preserve blitted scene
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; // After blit
+    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
     VkAttachmentReference colorAttachmentRef{};
@@ -223,10 +232,10 @@ Result<> VulkanSwapchain::create_ui_render_pass()
     VkSubpassDependency dependency{};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
     dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT; // After blit
-    dependency.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    dependency.srcAccessMask = 0;
     dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -266,6 +275,15 @@ Result<> VulkanSwapchain::create_ui_framebuffers()
 
         if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &m_uiFramebuffers[i]) != VK_SUCCESS)
         {
+            for (size_t j = 0; j < i; ++j)
+            {
+                if (m_uiFramebuffers[j] != VK_NULL_HANDLE)
+                {
+                    vkDestroyFramebuffer(device, m_uiFramebuffers[j], nullptr);
+                    m_uiFramebuffers[j] = VK_NULL_HANDLE;
+                }
+            }
+            m_uiFramebuffers.clear();
             return make_error("Failed to create UI framebuffer", ErrorCode::VulkanFramebufferCreationFailed);
         }
     }

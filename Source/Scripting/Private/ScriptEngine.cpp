@@ -14,6 +14,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -63,7 +64,12 @@ struct LuaEntity
 struct ScriptEngine::Impl
 {
     sol::state lua;
-    std::unordered_map<entt::entity, sol::environment> environments;
+    struct ScriptEnvironment
+    {
+        sol::environment environment;
+        World* world{nullptr};
+    };
+    std::unordered_map<entt::entity, ScriptEnvironment> environments;
     fs::path scriptRoot; // base directory for resolving relative script paths
 
     fs::path resolve_script_path(std::string_view scriptPath) const
@@ -214,7 +220,7 @@ Result<> ScriptEngine::load_script(World& world, entt::entity entity)
 
     // Create a sandboxed environment for this entity
     sol::environment env(lua, sol::create, lua.globals());
-    m_impl->environments[entity] = env;
+    m_impl->environments[entity] = {env, &world};
 
     // Execute the script within the environment
     auto loadResult = lua.safe_script(source, env, sol::script_pass_on_error, scriptPath.string());
@@ -259,7 +265,22 @@ void ScriptEngine::update(World& world, float dt)
                 continue;
         }
 
-        auto& env = envIt->second;
+        auto& envRecord = envIt->second;
+        if (envRecord.world != &world)
+        {
+            // Entity IDs can be reused across worlds; stale environments must be discarded.
+            m_impl->environments.erase(envIt);
+            auto result = load_script(world, entity);
+            if (!result)
+            {
+                fmt::print("Warning: {}\n", result.error().message);
+                continue;
+            }
+            envIt = m_impl->environments.find(entity);
+            if (envIt == m_impl->environments.end())
+                continue;
+        }
+        auto& env = envIt->second.environment;
         LuaEntity luaEntity{entity, &world};
 
         // Call on_start() once
@@ -300,7 +321,10 @@ void ScriptEngine::on_entity_destroyed(World& world, entt::entity entity)
     if (envIt == m_impl->environments.end())
         return;
 
-    auto& env = envIt->second;
+    if (envIt->second.world != &world)
+        return;
+
+    auto& env = envIt->second.environment;
     LuaEntity luaEntity{entity, &world};
 
     // Call on_destroy() if defined
@@ -320,13 +344,69 @@ void ScriptEngine::on_entity_destroyed(World& world, entt::entity entity)
     m_impl->environments.erase(envIt);
 }
 
+void ScriptEngine::on_entity_tree_destroyed(World& world, entt::entity entity)
+{
+    auto& reg = world.registry();
+    if (!reg.valid(entity))
+        return;
+
+    std::vector<entt::entity> stack;
+    stack.push_back(entity);
+    while (!stack.empty())
+    {
+        entt::entity current = stack.back();
+        stack.pop_back();
+
+        if (!reg.valid(current))
+            continue;
+
+        if (const auto* hierarchy = reg.try_get<HierarchyComponent>(current))
+        {
+            for (entt::entity child : hierarchy->children)
+            {
+                if (reg.valid(child))
+                    stack.push_back(child);
+            }
+        }
+
+        on_entity_destroyed(world, current);
+    }
+}
+
+void ScriptEngine::on_world_destroyed(World& world)
+{
+    if (!m_impl)
+        return;
+
+    // Collect keys first to avoid iterator invalidation while erasing.
+    std::vector<entt::entity> entities;
+    entities.reserve(m_impl->environments.size());
+    for (const auto& [entity, envRecord] : m_impl->environments)
+    {
+        if (envRecord.world == &world)
+            entities.push_back(entity);
+    }
+
+    for (entt::entity entity : entities)
+        on_entity_destroyed(world, entity);
+
+    // In case some entities were already invalid and did not invoke on_destroy.
+    for (auto it = m_impl->environments.begin(); it != m_impl->environments.end();)
+    {
+        if (it->second.world == &world)
+            it = m_impl->environments.erase(it);
+        else
+            ++it;
+    }
+}
+
 // ── reload_script ─────────────────────────────────────────────────────
 
 Result<> ScriptEngine::reload_script(World& world, entt::entity entity)
 {
     // Clean up existing environment
     auto envIt = m_impl->environments.find(entity);
-    if (envIt != m_impl->environments.end())
+    if (envIt != m_impl->environments.end() && envIt->second.world == &world)
         m_impl->environments.erase(envIt);
 
     // Reset initialized flag
@@ -350,4 +430,11 @@ void ScriptEngine::shutdown()
 
     // sol::state destructor handles lua_close
     fmt::print("[ScriptEngine] Shutdown\n");
+}
+
+std::size_t ScriptEngine::get_environment_count() const noexcept
+{
+    if (!m_impl)
+        return 0;
+    return m_impl->environments.size();
 }

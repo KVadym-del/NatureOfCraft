@@ -12,6 +12,7 @@ entt::entity World::create_entity(std::string name)
     m_registry.emplace<TransformComponent>(entity);
     m_registry.emplace<HierarchyComponent>(entity);
     m_registry.emplace<WorldMatrixCache>(entity);
+    m_rootEntitiesDirty = true;
 
     return entity;
 }
@@ -20,6 +21,7 @@ void World::destroy_entity(entt::entity entity)
 {
     if (!m_registry.valid(entity))
         return;
+    m_rootEntitiesDirty = true;
 
     // Recursively destroy all children first.
     if (auto* hierarchy = m_registry.try_get<HierarchyComponent>(entity))
@@ -49,6 +51,7 @@ void World::set_parent(entt::entity child, entt::entity parent)
 {
     if (!m_registry.valid(child) || !m_registry.valid(parent) || child == parent)
         return;
+    m_rootEntitiesDirty = true;
 
     auto& childHierarchy = m_registry.get<HierarchyComponent>(child);
 
@@ -70,6 +73,7 @@ void World::remove_parent(entt::entity child)
 {
     if (!m_registry.valid(child))
         return;
+    m_rootEntitiesDirty = true;
 
     auto& childHierarchy = m_registry.get<HierarchyComponent>(child);
 
@@ -86,25 +90,32 @@ void World::remove_parent(entt::entity child)
     childHierarchy.parent = entt::null;
 }
 
-std::vector<entt::entity> World::get_root_entities()
+void World::rebuild_root_entities_cache()
 {
-    std::vector<entt::entity> roots;
+    m_rootEntitiesCache.clear();
     auto view = m_registry.view<HierarchyComponent>();
     for (auto entity : view)
     {
         const auto& hierarchy = view.get<HierarchyComponent>(entity);
         if (hierarchy.parent == entt::null)
         {
-            roots.push_back(entity);
+            m_rootEntitiesCache.push_back(entity);
         }
     }
-    return roots;
+    m_rootEntitiesDirty = false;
+}
+
+const std::vector<entt::entity>& World::get_root_entities()
+{
+    if (m_rootEntitiesDirty)
+        rebuild_root_entities_cache();
+    return m_rootEntitiesCache;
 }
 
 void World::update_world_matrices()
 {
     // Start from all root entities and propagate downward.
-    auto roots = get_root_entities();
+    const auto& roots = get_root_entities();
     XMMATRIX identity = XMMatrixIdentity();
     for (entt::entity root : roots)
     {
@@ -128,10 +139,11 @@ void World::update_world_matrices_recursive(entt::entity entity, const XMMATRIX&
     }
 }
 
-std::vector<Renderable> World::collect_renderables()
+const std::vector<Renderable>& World::collect_renderables()
 {
-    std::vector<Renderable> renderables;
+    m_renderablesCache.clear();
     auto view = m_registry.view<MeshComponent, WorldMatrixCache>();
+    m_renderablesCache.reserve(static_cast<size_t>(view.size_hint()));
     for (auto entity : view)
     {
         const auto& mesh = view.get<MeshComponent>(entity);
@@ -144,9 +156,9 @@ std::vector<Renderable> World::collect_renderables()
         r.worldMatrix = cache.worldMatrix;
         r.meshIndex = static_cast<uint32_t>(mesh.meshIndex);
         r.materialIndex = static_cast<uint32_t>(mesh.materialIndex);
-        renderables.push_back(r);
+        m_renderablesCache.push_back(r);
     }
-    return renderables;
+    return m_renderablesCache;
 }
 
 entt::entity World::get_active_camera()

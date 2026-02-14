@@ -174,7 +174,7 @@ Result<std::vector<uint8_t>> LevelSerializer::serialize(const World& world, cons
 
     // Serialize root entities
     auto& mutableWorld = const_cast<World&>(world);
-    auto roots = mutableWorld.get_root_entities();
+    const auto& roots = mutableWorld.get_root_entities();
 
     std::vector<fb::Offset<fbl::EntityData>> rootOffsets;
     rootOffsets.reserve(roots.size());

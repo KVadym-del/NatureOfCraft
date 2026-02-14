@@ -1,3 +1,4 @@
+#define NOMINMAX
 #include "UI/ImGuiLayer.hpp"
 #include <Assets/Private/ModelLoader.hpp>
 #include <Assets/Public/AssetManager.hpp>
@@ -10,14 +11,19 @@
 #include <Scripting/Public/ScriptEngine.hpp>
 #include <Window/Public/Window.hpp>
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <imgui_impl_vulkan.h>
 
 #include <entt/entity/registry.hpp>
 
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
+#include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fmt/core.h>
@@ -25,6 +31,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -69,6 +76,22 @@ static const char* present_mode_name(VkPresentModeKHR mode)
     }
 }
 
+static KHR_Settings present_mode_to_setting(VkPresentModeKHR mode)
+{
+    switch (mode)
+    {
+    case VK_PRESENT_MODE_FIFO_KHR:
+    case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
+        return KHR_Settings::VSync;
+    case VK_PRESENT_MODE_MAILBOX_KHR:
+        return KHR_Settings::Triple_Buffering;
+    case VK_PRESENT_MODE_IMMEDIATE_KHR:
+        return KHR_Settings::Immediate;
+    default:
+        return KHR_Settings::VSync;
+    }
+}
+
 static const char* vk_format_name(VkFormat format)
 {
     switch (format)
@@ -106,6 +129,57 @@ static const char* msaa_sample_count_name(int samples)
         return "64x";
     default:
         return "Unknown";
+    }
+}
+
+static float bytes_to_mib(uint64_t bytes)
+{
+    return static_cast<float>(bytes) / (1024.0f * 1024.0f);
+}
+
+enum class ViewportAspectMode
+{
+    Free,
+    Aspect16x9,
+    Aspect4x3,
+    Aspect1x1,
+    Aspect21x9,
+};
+
+static const char* viewport_aspect_mode_name(ViewportAspectMode mode)
+{
+    switch (mode)
+    {
+    case ViewportAspectMode::Free:
+        return "AR: Free";
+    case ViewportAspectMode::Aspect16x9:
+        return "AR: 16:9";
+    case ViewportAspectMode::Aspect4x3:
+        return "AR: 4:3";
+    case ViewportAspectMode::Aspect1x1:
+        return "AR: 1:1";
+    case ViewportAspectMode::Aspect21x9:
+        return "AR: 21:9";
+    default:
+        return "AR: Free";
+    }
+}
+
+static float viewport_aspect_mode_value(ViewportAspectMode mode)
+{
+    switch (mode)
+    {
+    case ViewportAspectMode::Aspect16x9:
+        return 16.0f / 9.0f;
+    case ViewportAspectMode::Aspect4x3:
+        return 4.0f / 3.0f;
+    case ViewportAspectMode::Aspect1x1:
+        return 1.0f;
+    case ViewportAspectMode::Aspect21x9:
+        return 21.0f / 9.0f;
+    case ViewportAspectMode::Free:
+    default:
+        return 0.0f;
     }
 }
 
@@ -199,6 +273,81 @@ static std::vector<std::string> scan_available_scripts(const Project* project)
     }
 
     return {scripts.begin(), scripts.end()};
+}
+
+struct ProjectAssetEntry
+{
+    std::string relativePath;
+    std::string category;
+    uintmax_t sizeBytes{0};
+};
+
+static std::string to_lower_copy(std::string s)
+{
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
+static bool extension_in(const fs::path& path, const std::vector<std::string>& exts)
+{
+    std::string ext = to_lower_copy(path.extension().string());
+    return std::find(exts.begin(), exts.end(), ext) != exts.end();
+}
+
+static std::vector<ProjectAssetEntry> scan_project_assets(const Project* project)
+{
+    if (!project)
+        return {};
+
+    const fs::path root(project->root_path());
+    if (!fs::exists(root))
+        return {};
+
+    const std::vector<std::string> textureExts = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".dds", ".ktx", ".ktx2"};
+    const std::vector<std::string> shaderExts = {".vert", ".frag", ".comp", ".geom", ".tesc", ".tese"};
+    const std::vector<std::string> scriptExts = {".lua"};
+
+    std::vector<ProjectAssetEntry> assets;
+    auto collect_from_dir = [&](const fs::path& relativeDir, const std::string& category,
+                                const std::vector<std::string>& allowedExts) {
+        std::error_code ec;
+        fs::path absDir = root / relativeDir;
+        if (!fs::exists(absDir, ec))
+            return;
+
+        for (const auto& entry :
+             fs::recursive_directory_iterator(absDir, fs::directory_options::skip_permission_denied, ec))
+        {
+            if (ec || !entry.is_regular_file())
+                continue;
+
+            if (!allowedExts.empty() && !extension_in(entry.path(), allowedExts))
+                continue;
+
+            uintmax_t sizeBytes = entry.file_size(ec);
+            if (ec)
+                sizeBytes = 0;
+
+            assets.push_back(ProjectAssetEntry{
+                fs::relative(entry.path(), root, ec).generic_string(),
+                category,
+                sizeBytes,
+            });
+        }
+    };
+
+    collect_from_dir(fs::path("Assets") / "Models", "Optimized Models", {".noc_model"});
+    collect_from_dir(fs::path("Assets") / "Textures", "Textures", textureExts);
+    collect_from_dir(fs::path("Assets") / "Shaders", "Shaders", shaderExts);
+    collect_from_dir(fs::path("Scripts"), "Scripts", scriptExts);
+
+    std::sort(assets.begin(), assets.end(), [](const ProjectAssetEntry& a, const ProjectAssetEntry& b) {
+        if (a.category == b.category)
+            return a.relativePath < b.relativePath;
+        return a.category < b.category;
+    });
+
+    return assets;
 }
 
 // ── Import model helper ───────────────────────────────────────────────
@@ -621,11 +770,116 @@ int main()
     char newLevelNameBuf[256] = "NewLevel";
     char importModelPathBuf[512] = "Resources/wooden_watch_tower2.obj";
 
+    // Docking/panel visibility
+    bool showRendererStatsPanel = true;
+    bool showViewportPanel = true;
+    bool showGraphicsPanel = true;
+    bool showLevelPanel = true;
+    bool showObjectsPanel = true;
+    bool showSceneHierarchyPanel = true;
+    bool showInspectorPanel = true;
+    bool showAssetManagerPanel = true;
+
+    struct GraphicsSettingsDraft
+    {
+        int msaaSamples{1};
+        float renderScale{1.0f};
+        KHR_Settings presentMode{KHR_Settings::VSync};
+        bool initialized{false};
+        bool dirty{false};
+        bool autoApply{true};
+    } graphicsDraft;
+    bool graphicsApplyRequested{false};
+
+    std::vector<ProjectAssetEntry> projectAssetsCache;
+    bool projectAssetsDirty{true};
+    int selectedProjectAsset{-1};
+    char assetFilterBuf[256] = "";
+    bool requestDefaultDockLayout{true};
+
+    VkDescriptorSet viewportDescriptorSet{VK_NULL_HANDLE};
+    VkImageView viewportDescriptorImageView{VK_NULL_HANDLE};
+    bool viewportHovered{false};
+    ViewportAspectMode viewportAspectMode{ViewportAspectMode::Free};
+
     // ── State transition helpers ──────────────────────────────────────
 
+    auto clear_runtime_scene_state = [&]() {
+        renderer.wait_idle();
+        renderer.set_renderables({});
+
+        if (level)
+            scriptEngine.on_world_destroyed(level->world());
+
+        if (auto clearResult = renderer.clear_scene_content(); !clearResult)
+        {
+            statusMessage = {fmt::format("Warning: failed to clear renderer scene content: {}",
+                                         clearResult.error().message),
+                             true, 5.0f};
+        }
+
+        assetManager.clear_materials();
+        assetManager.clear_textures();
+        assetManager.clear_models();
+        assetManager.clear_meshes();
+    };
+
+    auto refresh_viewport_texture = [&]() {
+        const VkImageView sceneView = vulkan.get_scene_color_image_view();
+        if (sceneView == viewportDescriptorImageView && viewportDescriptorSet != VK_NULL_HANDLE)
+            return;
+
+        if (viewportDescriptorSet != VK_NULL_HANDLE)
+        {
+            renderer.wait_idle();
+            ImGui_ImplVulkan_RemoveTexture(viewportDescriptorSet);
+            viewportDescriptorSet = VK_NULL_HANDLE;
+        }
+
+        viewportDescriptorImageView = sceneView;
+        if (sceneView != VK_NULL_HANDLE)
+        {
+            viewportDescriptorSet =
+                ImGui_ImplVulkan_AddTexture(vulkan.get_sampler(), sceneView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+    };
+
+    auto release_viewport_texture = [&]() {
+        if (viewportDescriptorSet != VK_NULL_HANDLE)
+        {
+            renderer.wait_idle();
+            ImGui_ImplVulkan_RemoveTexture(viewportDescriptorSet);
+            viewportDescriptorSet = VK_NULL_HANDLE;
+        }
+        viewportDescriptorImageView = VK_NULL_HANDLE;
+    };
+
+    auto sync_graphics_draft_from_runtime = [&]() {
+        graphicsDraft.msaaSamples = renderer.get_msaa_samples();
+        graphicsDraft.renderScale = renderer.get_render_scale();
+        graphicsDraft.presentMode = present_mode_to_setting(vulkan.get_present_mode());
+        graphicsDraft.initialized = true;
+        graphicsDraft.dirty = false;
+    };
+
     auto enter_level_editor = [&](std::unique_ptr<Level> newLevel) {
+        clear_runtime_scene_state();
         level = std::move(newLevel);
         selectedEntity = entt::null;
+        projectAssetsDirty = true;
+        selectedProjectAsset = -1;
+        showRendererStatsPanel = true;
+        showViewportPanel = true;
+        showGraphicsPanel = true;
+        showLevelPanel = true;
+        showObjectsPanel = true;
+        showSceneHierarchyPanel = true;
+        showInspectorPanel = true;
+        showAssetManagerPanel = true;
+        graphicsDraft.initialized = false;
+        graphicsDraft.dirty = false;
+        graphicsApplyRequested = false;
+        requestDefaultDockLayout = true;
 
         World& world = level->world();
 
@@ -657,11 +911,28 @@ int main()
 
     auto enter_project_browser = [&]() {
         cameraController.detach();
-        renderer.set_renderables({});
+        clear_runtime_scene_state();
         level.reset();
         selectedEntity = entt::null;
+        projectAssetsDirty = true;
+        selectedProjectAsset = -1;
+        showAssetManagerPanel = true;
+        showViewportPanel = false;
+        graphicsDraft.initialized = false;
+        graphicsDraft.dirty = false;
+        graphicsApplyRequested = false;
+        requestDefaultDockLayout = true;
         editorState = EditorState::ProjectBrowser;
     };
+
+    // Ensure ImGui viewport texture descriptors are rebuilt immediately
+    // after swapchain/scene render target recreation.
+    vulkan.set_swapchain_recreated_callback([&]() {
+        Editor::UI::OnSwapchainRecreated(vulkan);
+        release_viewport_texture();
+        if (editorState == EditorState::LevelEditor && showViewportPanel)
+            refresh_viewport_texture();
+    });
 
     // ── Input state ───────────────────────────────────────────────────
     bool rightMouseDown = false;
@@ -672,19 +943,23 @@ int main()
 
     window.set_mouse_button_callback([&](int button, int action, int /*mods*/) {
         ImGuiIO& io = ImGui::GetIO();
-        if (io.WantCaptureMouse)
-            return;
         if (editorState != EditorState::LevelEditor)
+            return;
+        if (io.WantCaptureMouse && !viewportHovered)
             return;
 
         if (button == GLFW_MOUSE_BUTTON_RIGHT)
         {
+            if (action == GLFW_PRESS && !viewportHovered)
+                return;
             rightMouseDown = (action == GLFW_PRESS);
             if (action == GLFW_PRESS)
                 firstMouse = true;
         }
         if (button == GLFW_MOUSE_BUTTON_MIDDLE)
         {
+            if (action == GLFW_PRESS && !viewportHovered)
+                return;
             middleMouseDown = (action == GLFW_PRESS);
             if (action == GLFW_PRESS)
                 firstMouse = true;
@@ -693,10 +968,15 @@ int main()
 
     window.set_cursor_pos_callback([&](double xpos, double ypos) {
         ImGuiIO& io = ImGui::GetIO();
-        if (io.WantCaptureMouse)
-            return;
         if (editorState != EditorState::LevelEditor)
             return;
+        if (io.WantCaptureMouse && !viewportHovered && !rightMouseDown && !middleMouseDown)
+            return;
+        if (!viewportHovered && !rightMouseDown && !middleMouseDown)
+        {
+            firstMouse = true;
+            return;
+        }
 
         if (firstMouse)
         {
@@ -719,9 +999,11 @@ int main()
 
     window.set_scroll_callback([&](double /*xoffset*/, double yoffset) {
         ImGuiIO& io = ImGui::GetIO();
-        if (io.WantCaptureMouse)
-            return;
         if (editorState != EditorState::LevelEditor)
+            return;
+        if (io.WantCaptureMouse && !viewportHovered)
+            return;
+        if (!viewportHovered)
             return;
 
         cameraController.zoom(static_cast<float>(yoffset));
@@ -763,16 +1045,127 @@ int main()
                 renderer.set_renderables({});
             }
 
+            // Apply graphics changes outside UI building to avoid descriptor/resource races.
+            if (editorState == EditorState::LevelEditor && level)
+            {
+                if (!graphicsDraft.initialized)
+                    sync_graphics_draft_from_runtime();
+
+                if (graphicsApplyRequested)
+                {
+                    renderer.set_msaa_samples(graphicsDraft.msaaSamples);
+                    renderer.set_render_scale(graphicsDraft.renderScale);
+                    renderer.set_vsync(graphicsDraft.presentMode);
+                    refresh_viewport_texture();
+                    sync_graphics_draft_from_runtime();
+                    if (!graphicsDraft.autoApply)
+                        statusMessage = {"Graphics settings applied.", false, 2.5f};
+                    graphicsApplyRequested = false;
+                }
+            }
+
             Editor::UI::NewFrame();
+            viewportHovered = false;
+
+            if (editorState == EditorState::LevelEditor)
+                refresh_viewport_texture();
+
+            // Dockspace host window (requires docking-enabled ImGui build)
+            {
+                ImGuiWindowFlags hostFlags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking |
+                                             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                                             ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                                             ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus |
+                                             ImGuiWindowFlags_NoBackground;
+
+                const ImGuiViewport* viewport = ImGui::GetMainViewport();
+                ImGui::SetNextWindowPos(viewport->Pos);
+                ImGui::SetNextWindowSize(viewport->Size);
+                ImGui::SetNextWindowViewport(viewport->ID);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+                ImGui::Begin("EditorDockspaceHost", nullptr, hostFlags);
+                ImGui::PopStyleVar(3);
+
+                ImGuiID dockspaceId = ImGui::GetID("EditorDockspace");
+                ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
+
+                if (requestDefaultDockLayout)
+                {
+                    ImGui::DockBuilderRemoveNode(dockspaceId);
+                    ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
+                    ImGui::DockBuilderSetNodeSize(dockspaceId, viewport->Size);
+
+                    if (editorState == EditorState::ProjectBrowser)
+                    {
+                        ImGuiID dockMain = dockspaceId;
+                        ImGuiID dockBottom = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Down, 0.30f, nullptr, &dockMain);
+                        ImGui::DockBuilderDockWindow("Project Browser", dockMain);
+                        ImGui::DockBuilderDockWindow("Asset Manager", dockBottom);
+                    }
+                    else
+                    {
+                        ImGuiID dockMain = dockspaceId;
+                        ImGuiID dockBottom = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Down, 0.26f, nullptr, &dockMain);
+                        ImGuiID dockLeft = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Left, 0.22f, nullptr, &dockMain);
+                        ImGuiID dockRight = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Right, 0.24f, nullptr, &dockMain);
+
+                        ImGuiID dockLeftTop = ImGui::DockBuilderSplitNode(dockLeft, ImGuiDir_Up, 0.44f, nullptr, &dockLeft);
+                        ImGuiID dockLeftMid = ImGui::DockBuilderSplitNode(dockLeft, ImGuiDir_Up, 0.33f, nullptr, &dockLeft);
+                        ImGuiID dockLeftMidTop = ImGui::DockBuilderSplitNode(dockLeftMid, ImGuiDir_Up, 0.55f, nullptr, &dockLeftMid);
+                        ImGuiID dockRightTop = ImGui::DockBuilderSplitNode(dockRight, ImGuiDir_Up, 0.58f, nullptr, &dockRight);
+
+                        ImGui::DockBuilderDockWindow("Viewport", dockMain);
+                        ImGui::DockBuilderDockWindow("Renderer Stats", dockLeftTop);
+                        ImGui::DockBuilderDockWindow("Graphics Settings", dockLeftMidTop);
+                        ImGui::DockBuilderDockWindow("Objects", dockLeft);
+                        ImGui::DockBuilderDockWindow("Level", dockLeftMid);
+                        ImGui::DockBuilderDockWindow("Scene Hierarchy", dockRightTop);
+                        ImGui::DockBuilderDockWindow("Inspector", dockRight);
+                        ImGui::DockBuilderDockWindow("Asset Manager", dockBottom);
+                    }
+
+                    ImGui::DockBuilderFinish(dockspaceId);
+                    requestDefaultDockLayout = false;
+                }
+
+                if (ImGui::BeginMenuBar())
+                {
+                    if (ImGui::BeginMenu("View"))
+                    {
+                        ImGui::MenuItem("Viewport", nullptr, &showViewportPanel);
+                        ImGui::MenuItem("Renderer Stats", nullptr, &showRendererStatsPanel);
+                        ImGui::MenuItem("Graphics Settings", nullptr, &showGraphicsPanel);
+                        ImGui::MenuItem("Objects", nullptr, &showObjectsPanel);
+                        ImGui::MenuItem("Level", nullptr, &showLevelPanel);
+                        ImGui::MenuItem("Scene Hierarchy", nullptr, &showSceneHierarchyPanel);
+                        ImGui::MenuItem("Inspector", nullptr, &showInspectorPanel);
+                        ImGui::MenuItem("Asset Manager", nullptr, &showAssetManagerPanel);
+                        ImGui::EndMenu();
+                    }
+
+                    if (ImGui::BeginMenu("Project"))
+                    {
+                        if (ImGui::MenuItem("Refresh Asset Cache", nullptr, false, project != nullptr))
+                            projectAssetsDirty = true;
+                        if (ImGui::MenuItem("Reset Default Layout"))
+                            requestDefaultDockLayout = true;
+                        ImGui::EndMenu();
+                    }
+
+                    ImGui::EndMenuBar();
+                }
+
+                ImGui::End();
+            }
 
             // =============================================================
             // PROJECT BROWSER STATE
             // =============================================================
             if (editorState == EditorState::ProjectBrowser)
             {
-                ImGui::SetNextWindowPos(ImVec2(150.0f, 80.0f), ImGuiCond_FirstUseEver);
-                ImGui::SetNextWindowSize(ImVec2(500.0f, 0.0f), ImGuiCond_FirstUseEver);
-                if (ImGui::Begin("Project Browser", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                if (ImGui::Begin("Project Browser"))
                 {
                     if (!project)
                     {
@@ -798,6 +1191,9 @@ int main()
                                 if (result)
                                 {
                                     project = std::make_unique<Project>(std::move(result.value()));
+                                    projectAssetsDirty = true;
+                                    selectedProjectAsset = -1;
+                                    requestDefaultDockLayout = true;
                                     auto saveResult = project->save();
                                     if (!saveResult)
                                         statusMessage = {fmt::format("Warning: could not save project manifest: {}",
@@ -836,6 +1232,9 @@ int main()
                                 if (result)
                                 {
                                     project = std::make_unique<Project>(std::move(result.value()));
+                                    projectAssetsDirty = true;
+                                    selectedProjectAsset = -1;
+                                    requestDefaultDockLayout = true;
                                     statusMessage = {fmt::format("Loaded project '{}'", project->name()), false, 3.0f};
                                 }
                                 else
@@ -941,6 +1340,9 @@ int main()
                         if (ImGui::Button("Close Project"))
                         {
                             project.reset();
+                            projectAssetsDirty = true;
+                            selectedProjectAsset = -1;
+                            requestDefaultDockLayout = true;
                             statusMessage = {"Project closed.", false, 3.0f};
                         }
                     }
@@ -949,6 +1351,93 @@ int main()
                     draw_status_message(statusMessage, deltaTime);
                 }
                 ImGui::End();
+
+                // Asset manager is also available in project browser mode.
+                if (project && showAssetManagerPanel)
+                {
+                    if (ImGui::Begin("Asset Manager", &showAssetManagerPanel))
+                    {
+                        if (projectAssetsDirty)
+                        {
+                            projectAssetsCache = scan_project_assets(project.get());
+                            projectAssetsDirty = false;
+                            if (selectedProjectAsset >= static_cast<int>(projectAssetsCache.size()))
+                                selectedProjectAsset = -1;
+                        }
+
+                        if (ImGui::Button("Refresh"))
+                            projectAssetsDirty = true;
+
+                        ImGui::InputTextWithHint("##AssetFilterProjectBrowser", "Filter assets...", assetFilterBuf,
+                                                 sizeof(assetFilterBuf));
+                        const std::string filter = to_lower_copy(assetFilterBuf);
+
+                        ImGui::Separator();
+                        ImGui::Text("Tracked assets: %zu", projectAssetsCache.size());
+
+                        ImGuiTableFlags tableFlags =
+                            ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
+                            ImGuiTableFlags_Resizable;
+                        if (ImGui::BeginTable("ProjectAssetsTableBrowser", 3, tableFlags, ImVec2(0.0f, 260.0f)))
+                        {
+                            ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 130.0f);
+                            ImGui::TableSetupColumn("Path");
+                            ImGui::TableSetupColumn("Size (KiB)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+                            ImGui::TableHeadersRow();
+
+                            for (int i = 0; i < static_cast<int>(projectAssetsCache.size()); ++i)
+                            {
+                                const auto& asset = projectAssetsCache[i];
+                                const std::string searchable = to_lower_copy(asset.category + " " + asset.relativePath);
+                                if (!filter.empty() && searchable.find(filter) == std::string::npos)
+                                    continue;
+
+                                ImGui::TableNextRow();
+                                ImGui::TableSetColumnIndex(0);
+                                ImGui::TextUnformatted(asset.category.c_str());
+
+                                ImGui::TableSetColumnIndex(1);
+                                bool selected = (selectedProjectAsset == i);
+                                if (ImGui::Selectable(asset.relativePath.c_str(), selected,
+                                                      ImGuiSelectableFlags_SpanAllColumns))
+                                    selectedProjectAsset = i;
+
+                                ImGui::TableSetColumnIndex(2);
+                                ImGui::Text("%.1f", static_cast<double>(asset.sizeBytes) / 1024.0);
+                            }
+
+                            ImGui::EndTable();
+                        }
+
+                        const bool hasSelection =
+                            selectedProjectAsset >= 0 && selectedProjectAsset < static_cast<int>(projectAssetsCache.size());
+                        if (!hasSelection)
+                            ImGui::BeginDisabled();
+                        if (ImGui::Button("Delete Selected Asset"))
+                        {
+                            const auto& asset = projectAssetsCache[selectedProjectAsset];
+                            std::error_code ec;
+                            fs::path absPath = project->get_absolute_path(asset.relativePath);
+                            if (fs::remove(absPath, ec))
+                            {
+                                statusMessage = {fmt::format("Deleted '{}'", asset.relativePath), false, 3.5f};
+                                projectAssetsDirty = true;
+                                selectedProjectAsset = -1;
+                                assetManager.clear_models();
+                                assetManager.clear_textures();
+                            }
+                            else
+                            {
+                                statusMessage = {fmt::format("Failed to delete '{}': {}", asset.relativePath,
+                                                             ec.message()),
+                                                 true, 5.0f};
+                            }
+                        }
+                        if (!hasSelection)
+                            ImGui::EndDisabled();
+                    }
+                    ImGui::End();
+                }
             }
 
             // =============================================================
@@ -957,105 +1446,203 @@ int main()
             if (editorState == EditorState::LevelEditor && level)
             {
                 World& world = level->world();
+                bool backToProjectsRequested = false;
+
+                // --- Viewport ---
+                if (showViewportPanel)
+                {
+                    ImGuiWindowFlags viewportFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+                    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+                    if (ImGui::Begin("Viewport", &showViewportPanel, viewportFlags))
+                    {
+                        if (ImGui::SmallButton(viewport_aspect_mode_name(viewportAspectMode)))
+                            ImGui::OpenPopup("ViewportAspectModePopup");
+                        if (ImGui::BeginPopup("ViewportAspectModePopup"))
+                        {
+                            const auto add_aspect_option = [&](const char* label, ViewportAspectMode mode) {
+                                const bool selected = (viewportAspectMode == mode);
+                                if (ImGui::Selectable(label, selected))
+                                    viewportAspectMode = mode;
+                                if (selected)
+                                    ImGui::SetItemDefaultFocus();
+                            };
+                            add_aspect_option("Free (Unlocked)", ViewportAspectMode::Free);
+                            add_aspect_option("16:9", ViewportAspectMode::Aspect16x9);
+                            add_aspect_option("4:3", ViewportAspectMode::Aspect4x3);
+                            add_aspect_option("1:1", ViewportAspectMode::Aspect1x1);
+                            add_aspect_option("21:9", ViewportAspectMode::Aspect21x9);
+                            ImGui::EndPopup();
+                        }
+
+                        const ImVec2 avail = ImGui::GetContentRegionAvail();
+                        ImVec2 imageSize = avail;
+                        if (avail.x > 1.0f && avail.y > 1.0f && viewportAspectMode != ViewportAspectMode::Free)
+                        {
+                            const float targetAspect = viewport_aspect_mode_value(viewportAspectMode);
+                            if (targetAspect > 0.0f)
+                            {
+                                const float currentAspect = avail.x / avail.y;
+                                if (currentAspect > targetAspect)
+                                    imageSize.x = avail.y * targetAspect;
+                                else
+                                    imageSize.y = avail.x / targetAspect;
+
+                                const ImVec2 cursorPos = ImGui::GetCursorPos();
+                                ImGui::SetCursorPos(ImVec2(cursorPos.x + (avail.x - imageSize.x) * 0.5f,
+                                                           cursorPos.y + (avail.y - imageSize.y) * 0.5f));
+                            }
+                        }
+
+                        if (viewportDescriptorSet != VK_NULL_HANDLE)
+                        {
+                            ImGui::Image(reinterpret_cast<ImTextureID>(viewportDescriptorSet), imageSize, ImVec2(0, 0),
+                                         ImVec2(1, 1));
+                            viewportHovered = ImGui::IsItemHovered();
+                        }
+                        else
+                        {
+                            ImGui::TextDisabled("Viewport texture unavailable");
+                            viewportHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
+                        }
+                    }
+                    ImGui::End();
+                    ImGui::PopStyleVar();
+                }
 
                 // --- Renderer Stats Overlay ---
-                ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_FirstUseEver);
-                ImGui::SetNextWindowBgAlpha(0.6f);
-                if (ImGui::Begin("Renderer Stats", nullptr,
-                                 ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_AlwaysAutoResize))
+                if (showRendererStatsPanel)
                 {
-                    uint32_t rw = renderer.get_render_width();
-                    uint32_t rh = renderer.get_render_height();
-
-                    ImGui::Text("FPS: %.1f", fpsSmoothed);
-                    ImGui::Text("Frame Time: %.2f ms", deltaTime * 1000.0f);
-                    ImGui::Separator();
-                    ImGui::Text("GPU: %s", gpuName.c_str());
-                    ImGui::Text("Resolution: %u x %u", rw, rh);
-                    ImGui::Text("Present Mode: %s", present_mode_name(vulkan.get_present_mode()));
-                    ImGui::Text("Surface Format: %s", vk_format_name(vulkan.get_swapchain_format()));
-                    ImGui::Text("MSAA: %s", msaa_sample_count_name(renderer.get_msaa_samples()));
-                    ImGui::Text("Render Scale: %.0f%%", renderer.get_render_scale() * 100.0f);
-                    ImGui::Text("Swapchain Images: %u", vulkan.get_swapchain_image_count());
-                    ImGui::Separator();
-                    ImGui::Text("Draw Calls: %u", vulkan.get_renderable_count());
-                    ImGui::Text("Triangles: %u", vulkan.get_total_triangle_count());
-                    ImGui::Text("Meshes Loaded: %u", vulkan.get_mesh_count());
-                    ImGui::Text("Textures Loaded: %u", vulkan.get_texture_count());
-                    ImGui::Text("Materials Loaded: %u", vulkan.get_material_count());
-                }
-                ImGui::End();
-
-                // --- Settings Panel ---
-                ImGui::SetNextWindowPos(ImVec2(10.0f, 350.0f), ImGuiCond_FirstUseEver);
-                ImGui::SetNextWindowSize(ImVec2(280.0f, 0.0f), ImGuiCond_FirstUseEver);
-                if (ImGui::Begin("Settings", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-                {
-                    // MSAA dropdown
-                    int currentMsaa = renderer.get_msaa_samples();
-                    const char* msaaLabel = msaa_sample_count_name(currentMsaa);
-                    if (ImGui::BeginCombo("MSAA", msaaLabel))
+                    if (ImGui::Begin("Renderer Stats", &showRendererStatsPanel, ImGuiWindowFlags_NoFocusOnAppearing))
                     {
-                        constexpr int msaaOptions[] = {1, 2, 4, 8};
-                        for (int opt : msaaOptions)
+                        uint32_t rw = renderer.get_render_width();
+                        uint32_t rh = renderer.get_render_height();
+
+                        ImGui::Text("FPS: %.1f", fpsSmoothed);
+                        ImGui::Text("Frame Time: %.2f ms", deltaTime * 1000.0f);
+                        ImGui::Separator();
+                        ImGui::Text("GPU: %s", gpuName.c_str());
+                        ImGui::Text("Resolution: %u x %u", rw, rh);
+                        ImGui::Text("Present Mode: %s", present_mode_name(vulkan.get_present_mode()));
+                        ImGui::Text("Surface Format: %s", vk_format_name(vulkan.get_swapchain_format()));
+                        ImGui::Text("MSAA: %s", msaa_sample_count_name(renderer.get_msaa_samples()));
+                        ImGui::Text("Render Scale: %.0f%%", renderer.get_render_scale() * 100.0f);
+                        ImGui::Text("Swapchain Images: %u", vulkan.get_swapchain_image_count());
+                        ImGui::Separator();
+                        ImGui::Text("Submitted Renderables: %u", vulkan.get_renderable_count());
+                        ImGui::Text("Visible Renderables: %u", vulkan.get_last_visible_renderable_count());
+                        ImGui::Text("Culled Renderables: %u", vulkan.get_last_culled_renderable_count());
+                        ImGui::Text("Instanced Batches: %u", vulkan.get_last_instanced_batch_count());
+                        ImGui::Text("Draw Calls: %u", vulkan.get_last_draw_call_count());
+                        ImGui::Text("Triangles: %u", vulkan.get_total_triangle_count());
+                        ImGui::Text("Meshes Loaded: %u", vulkan.get_mesh_count());
+                        ImGui::Text("Textures Loaded: %u", vulkan.get_texture_count());
+                        ImGui::Text("Materials Loaded: %u", vulkan.get_material_count());
+                        ImGui::Text("Mesh VRAM (est): %.2f MiB", bytes_to_mib(vulkan.get_mesh_memory_bytes()));
+                        ImGui::Text("Texture VRAM (est): %.2f MiB", bytes_to_mib(vulkan.get_texture_memory_bytes()));
+                        ImGui::Text("Script Environments: %zu", scriptEngine.get_environment_count());
+                    }
+                    ImGui::End();
+                }
+
+                // --- Graphics Settings Panel ---
+                if (showGraphicsPanel)
+                {
+                    if (ImGui::Begin("Graphics Settings", &showGraphicsPanel))
+                    {
+                        // MSAA
+                        bool msaaChanged = false;
+                        const char* msaaLabel = msaa_sample_count_name(graphicsDraft.msaaSamples);
+                        if (ImGui::BeginCombo("MSAA", msaaLabel))
                         {
-                            bool isSelected = (currentMsaa == opt);
-                            if (ImGui::Selectable(msaa_sample_count_name(opt), isSelected))
+                            constexpr int msaaOptions[] = {1, 2, 4, 8};
+                            for (int opt : msaaOptions)
                             {
-                                if (opt != currentMsaa)
-                                    renderer.set_msaa_samples(opt);
+                                bool isSelected = (graphicsDraft.msaaSamples == opt);
+                                if (ImGui::Selectable(msaa_sample_count_name(opt), isSelected))
+                                {
+                                    graphicsDraft.msaaSamples = opt;
+                                    graphicsDraft.dirty = true;
+                                    msaaChanged = true;
+                                }
+                                if (isSelected)
+                                    ImGui::SetItemDefaultFocus();
                             }
-                            if (isSelected)
-                                ImGui::SetItemDefaultFocus();
+                            ImGui::EndCombo();
                         }
-                        ImGui::EndCombo();
+
+                        // Render scale
+                        bool renderScaleChanged =
+                            ImGui::SliderFloat("Render Scale", &graphicsDraft.renderScale, 0.25f, 2.0f, "%.2f");
+                        const bool renderScaleReleased = ImGui::IsItemDeactivatedAfterEdit();
+                        if (renderScaleChanged)
+                            graphicsDraft.dirty = true;
+
+                        // Present mode
+                        bool presentModeChanged = false;
+                        int selected = static_cast<int>(graphicsDraft.presentMode);
+                        ImGui::Text("Present Mode");
+                        if (ImGui::RadioButton("VSync", &selected, static_cast<int>(KHR_Settings::VSync)))
+                        {
+                            graphicsDraft.presentMode = KHR_Settings::VSync;
+                            graphicsDraft.dirty = true;
+                            presentModeChanged = true;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::RadioButton("Triple Buffered", &selected,
+                                               static_cast<int>(KHR_Settings::Triple_Buffering)))
+                        {
+                            graphicsDraft.presentMode = KHR_Settings::Triple_Buffering;
+                            graphicsDraft.dirty = true;
+                            presentModeChanged = true;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::RadioButton("Immediate", &selected, static_cast<int>(KHR_Settings::Immediate)))
+                        {
+                            graphicsDraft.presentMode = KHR_Settings::Immediate;
+                            graphicsDraft.dirty = true;
+                            presentModeChanged = true;
+                        }
+
+                        ImGui::Checkbox("Auto Apply", &graphicsDraft.autoApply);
+                        if (graphicsDraft.autoApply && graphicsDraft.dirty)
+                        {
+                            // Apply MSAA/present changes immediately, but only apply render scale when the slider
+                            // interaction is committed (release/enter) to avoid rapid recreate churn.
+                            if (msaaChanged || presentModeChanged || renderScaleReleased)
+                                graphicsApplyRequested = true;
+                        }
+
+                        if (ImGui::Button("Apply"))
+                            graphicsApplyRequested = true;
+                        ImGui::SameLine();
+                        if (ImGui::Button("Revert"))
+                            sync_graphics_draft_from_runtime();
+
+                        if (graphicsDraft.autoApply)
+                            ImGui::TextDisabled("Auto Apply is enabled.");
+
+                        // Shader recompilation
+                        ImGui::Spacing();
+                        ImGui::SeparatorText("Shaders");
+                        if (ImGui::Button("Recompile Shaders"))
+                        {
+                            renderer.wait_idle();
+                            auto result = renderer.recompile_shaders();
+                            if (result)
+                                statusMessage = {"Shaders recompiled successfully.", false, 3.0f};
+                            else
+                                statusMessage =
+                                    {fmt::format("Shader compilation failed: {}", result.error().message), true, 5.0f};
+                        }
                     }
-
-                    // Render Scale slider
-                    float renderScale = renderer.get_render_scale();
-                    if (ImGui::SliderFloat("Render Scale", &renderScale, 0.25f, 2.0f, "%.2f"))
-                        renderer.set_render_scale(renderScale);
-
-                    // Present Mode selection
-                    KHR_Settings currentSetting =
-                        renderer.get_vsync()
-                            ? KHR_Settings::VSync
-                            : (vulkan.get_present_mode() == VK_PRESENT_MODE_MAILBOX_KHR ? KHR_Settings::Triple_Buffering
-                                                                                        : KHR_Settings::Immediate);
-
-                    int selected = static_cast<int>(currentSetting);
-                    ImGui::Text("Present Mode");
-                    if (ImGui::RadioButton("VSync", &selected, static_cast<int>(KHR_Settings::VSync)))
-                        renderer.set_vsync(KHR_Settings::VSync);
-                    ImGui::SameLine();
-                    if (ImGui::RadioButton("Triple Buffered", &selected,
-                                           static_cast<int>(KHR_Settings::Triple_Buffering)))
-                        renderer.set_vsync(KHR_Settings::Triple_Buffering);
-                    ImGui::SameLine();
-                    if (ImGui::RadioButton("Immediate", &selected, static_cast<int>(KHR_Settings::Immediate)))
-                        renderer.set_vsync(KHR_Settings::Immediate);
-
-                    // Shader recompilation
-                    ImGui::Spacing();
-                    ImGui::SeparatorText("Shaders");
-                    if (ImGui::Button("Recompile Shaders"))
-                    {
-                        renderer.wait_idle();
-                        auto result = renderer.recompile_shaders();
-                        if (result)
-                            statusMessage = {"Shaders recompiled successfully.", false, 3.0f};
-                        else
-                            statusMessage = {fmt::format("Shader compilation failed: {}", result.error().message), true,
-                                             5.0f};
-                    }
+                    ImGui::End();
                 }
-                ImGui::End();
 
                 // --- Level Panel ---
-                ImGui::SetNextWindowPos(ImVec2(10.0f, 530.0f), ImGuiCond_FirstUseEver);
-                ImGui::SetNextWindowSize(ImVec2(280.0f, 0.0f), ImGuiCond_FirstUseEver);
-                if (ImGui::Begin("Level", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                if (showLevelPanel)
                 {
+                    if (ImGui::Begin("Level", &showLevelPanel))
+                    {
                     ImGui::Text("Level: %s%s", level->name().c_str(), level->is_dirty() ? " *" : "");
 
                     if (!level->file_path().empty())
@@ -1113,78 +1700,181 @@ int main()
 
                     ImGui::SameLine();
                     if (ImGui::Button("Back to Projects"))
-                    {
-                        enter_project_browser();
-                    }
+                        backToProjectsRequested = true;
 
-                    draw_status_message(statusMessage, deltaTime);
+                        draw_status_message(statusMessage, deltaTime);
+                    }
+                    ImGui::End();
                 }
-                ImGui::End();
 
                 // --- Objects Panel (Add Entity + Import Model) ---
-                ImGui::SetNextWindowPos(ImVec2(300.0f, 10.0f), ImGuiCond_FirstUseEver);
-                ImGui::SetNextWindowSize(ImVec2(290.0f, 0.0f), ImGuiCond_FirstUseEver);
-                if (ImGui::Begin("Objects", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                if (showObjectsPanel)
                 {
-                    // Add empty entity
-                    if (ImGui::Button("Add Entity"))
+                    if (ImGui::Begin("Objects", &showObjectsPanel))
                     {
-                        ++addedEntityCount;
-                        std::string name = fmt::format("Entity_{}", addedEntityCount);
-                        world.create_entity(std::move(name));
-                        level->mark_dirty();
-                    }
-
-                    ImGui::Spacing();
-                    ImGui::SeparatorText("Import Model");
-                    ImGui::InputText("OBJ Path", importModelPathBuf, sizeof(importModelPathBuf));
-
-                    if (ImGui::Button("Import"))
-                    {
-                        std::string objPath{importModelPathBuf};
-                        if (objPath.empty())
+                        // Add empty entity
+                        if (ImGui::Button("Add Empty Entity"))
                         {
-                            statusMessage = {"Please enter an OBJ file path.", true, 4.0f};
+                            ++addedEntityCount;
+                            std::string name = fmt::format("Entity_{}", addedEntityCount);
+                            world.create_entity(std::move(name));
+                            level->mark_dirty();
                         }
-                        else
+
+                        ImGui::Spacing();
+                        ImGui::SeparatorText("Import Model");
+                        ImGui::InputText("OBJ Path", importModelPathBuf, sizeof(importModelPathBuf));
+
+                        if (ImGui::Button("Import"))
+                        {
+                            std::string objPath{importModelPathBuf};
+                            if (objPath.empty())
+                            {
+                                statusMessage = {"Please enter an OBJ file path.", true, 4.0f};
+                            }
+                            else
+                            {
+                                renderer.wait_idle();
+                                if (import_model(objPath, assetManager, renderer, world, statusMessage, project.get()))
+                                {
+                                    level->mark_dirty();
+                                    projectAssetsDirty = true;
+                                }
+                            }
+                        }
+                    }
+                    ImGui::End();
+                }
+
+                // --- Asset Manager Panel ---
+                if (showAssetManagerPanel)
+                {
+                    if (ImGui::Begin("Asset Manager", &showAssetManagerPanel))
+                    {
+                    if (project)
+                    {
+                        if (projectAssetsDirty)
+                        {
+                            projectAssetsCache = scan_project_assets(project.get());
+                            projectAssetsDirty = false;
+                            if (selectedProjectAsset >= static_cast<int>(projectAssetsCache.size()))
+                                selectedProjectAsset = -1;
+                        }
+
+                        if (ImGui::Button("Refresh"))
+                            projectAssetsDirty = true;
+                        ImGui::SameLine();
+                        if (ImGui::Button("Reload Level Assets"))
                         {
                             renderer.wait_idle();
-                            if (import_model(objPath, assetManager, renderer, world, statusMessage, project.get()))
+                            reload_level_assets(assetManager, renderer, world, statusMessage, project.get());
+                            projectAssetsDirty = true;
+                        }
+
+                        ImGui::InputTextWithHint("##AssetFilter", "Filter assets...", assetFilterBuf, sizeof(assetFilterBuf));
+                        const std::string filter = to_lower_copy(assetFilterBuf);
+
+                        ImGui::Separator();
+                        ImGui::Text("Tracked assets: %zu", projectAssetsCache.size());
+
+                        ImGuiTableFlags tableFlags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
+                                                     ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable;
+                        if (ImGui::BeginTable("ProjectAssetsTable", 3, tableFlags, ImVec2(0.0f, 220.0f)))
+                        {
+                            ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 130.0f);
+                            ImGui::TableSetupColumn("Path");
+                            ImGui::TableSetupColumn("Size (KiB)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+                            ImGui::TableHeadersRow();
+
+                            for (int i = 0; i < static_cast<int>(projectAssetsCache.size()); ++i)
+                            {
+                                const auto& asset = projectAssetsCache[i];
+                                const std::string searchable = to_lower_copy(asset.category + " " + asset.relativePath);
+                                if (!filter.empty() && searchable.find(filter) == std::string::npos)
+                                    continue;
+
+                                ImGui::TableNextRow();
+                                ImGui::TableSetColumnIndex(0);
+                                ImGui::TextUnformatted(asset.category.c_str());
+
+                                ImGui::TableSetColumnIndex(1);
+                                bool selected = (selectedProjectAsset == i);
+                                if (ImGui::Selectable(asset.relativePath.c_str(), selected,
+                                                      ImGuiSelectableFlags_SpanAllColumns))
+                                    selectedProjectAsset = i;
+
+                                ImGui::TableSetColumnIndex(2);
+                                ImGui::Text("%.1f", static_cast<double>(asset.sizeBytes) / 1024.0);
+                            }
+
+                            ImGui::EndTable();
+                        }
+
+                        const bool hasSelection =
+                            selectedProjectAsset >= 0 && selectedProjectAsset < static_cast<int>(projectAssetsCache.size());
+                        if (!hasSelection)
+                            ImGui::BeginDisabled();
+                        if (ImGui::Button("Delete Selected Asset"))
+                        {
+                            const auto& asset = projectAssetsCache[selectedProjectAsset];
+                            std::error_code ec;
+                            fs::path absPath = project->get_absolute_path(asset.relativePath);
+                            if (fs::remove(absPath, ec))
+                            {
+                                statusMessage = {fmt::format("Deleted '{}'", asset.relativePath), false, 3.5f};
+                                projectAssetsDirty = true;
+                                selectedProjectAsset = -1;
+                                assetManager.clear_models();
+                                assetManager.clear_textures();
                                 level->mark_dirty();
+                            }
+                            else
+                            {
+                                statusMessage =
+                                    {fmt::format("Failed to delete '{}': {}", asset.relativePath, ec.message()), true, 5.0f};
+                            }
+                        }
+                        if (!hasSelection)
+                            ImGui::EndDisabled();
+                    }
+                        else
+                        {
+                            ImGui::TextDisabled("Open a project to manage imported assets.");
                         }
                     }
+                    ImGui::End();
                 }
-                ImGui::End();
 
                 // --- Scene Hierarchy ---
-                ImGui::SetNextWindowPos(ImVec2(600.0f, 10.0f), ImGuiCond_FirstUseEver);
-                ImGui::SetNextWindowSize(ImVec2(300.0f, 400.0f), ImGuiCond_FirstUseEver);
-                if (ImGui::Begin("Scene Hierarchy"))
+                if (showSceneHierarchyPanel)
                 {
-                    auto roots = world.get_root_entities();
-                    for (entt::entity root : roots)
-                        draw_entity_hierarchy(world, root, selectedEntity);
+                    if (ImGui::Begin("Scene Hierarchy", &showSceneHierarchyPanel))
+                    {
+                        const auto& roots = world.get_root_entities();
+                        for (entt::entity root : roots)
+                            draw_entity_hierarchy(world, root, selectedEntity);
+                    }
+                    ImGui::End();
                 }
-                ImGui::End();
 
                 // --- Inspector ---
-                ImGui::SetNextWindowPos(ImVec2(600.0f, 420.0f), ImGuiCond_FirstUseEver);
-                ImGui::SetNextWindowSize(ImVec2(300.0f, 0.0f), ImGuiCond_FirstUseEver);
-                if (ImGui::Begin("Inspector", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                if (showInspectorPanel)
                 {
-                    if (selectedEntity != entt::null && world.registry().valid(selectedEntity))
+                    if (ImGui::Begin("Inspector", &showInspectorPanel))
                     {
-                        const auto& nameComp = world.registry().get<NameComponent>(selectedEntity);
-                        ImGui::Text("Entity: %s", nameComp.name.c_str());
-
-                        if (const auto* mc = world.registry().try_get<MeshComponent>(selectedEntity))
+                        if (selectedEntity != entt::null && world.registry().valid(selectedEntity))
                         {
-                            if (mc->meshIndex >= 0)
-                                ImGui::Text("Mesh Index: %d", mc->meshIndex);
-                            ImGui::Text("Material Index: %d", mc->materialIndex);
-                            if (!mc->assetPath.empty())
-                                ImGui::TextDisabled("Asset: %s", mc->assetPath.c_str());
-                        }
+                            const auto& nameComp = world.registry().get<NameComponent>(selectedEntity);
+                            ImGui::Text("Entity: %s", nameComp.name.c_str());
+
+                            if (const auto* mc = world.registry().try_get<MeshComponent>(selectedEntity))
+                            {
+                                if (mc->meshIndex >= 0)
+                                    ImGui::Text("Mesh Index: %d", mc->meshIndex);
+                                ImGui::Text("Material Index: %d", mc->materialIndex);
+                                if (!mc->assetPath.empty())
+                                    ImGui::TextDisabled("Asset: %s", mc->assetPath.c_str());
+                            }
 
                         if (world.registry().any_of<CameraComponent>(selectedEntity))
                         {
@@ -1287,7 +1977,7 @@ int main()
                             }
                             else
                             {
-                                scriptEngine.on_entity_destroyed(world, selectedEntity);
+                                scriptEngine.on_entity_tree_destroyed(world, selectedEntity);
                                 world.destroy_entity(selectedEntity);
                                 selectedEntity = entt::null;
                                 level->mark_dirty();
@@ -1298,12 +1988,16 @@ int main()
                         if (ImGui::Button("Deselect"))
                             selectedEntity = entt::null;
                     }
-                    else
-                    {
-                        ImGui::TextDisabled("Select an entity in the Scene Hierarchy");
+                        else
+                        {
+                            ImGui::TextDisabled("Select an entity in the Scene Hierarchy");
+                        }
                     }
+                    ImGui::End();
                 }
-                ImGui::End();
+
+                if (backToProjectsRequested)
+                    enter_project_browser();
             }
 
             ImGui::Render();
@@ -1311,13 +2005,17 @@ int main()
         }));
         code != 0)
     {
+        release_viewport_texture();
         Editor::UI::Shutdown(vulkan);
         ImGui::DestroyContext();
         return code;
     }
 
     renderer.wait_idle();
+    if (level)
+        scriptEngine.on_world_destroyed(level->world());
     scriptEngine.shutdown();
+    release_viewport_texture();
     Editor::UI::Shutdown(vulkan);
     ImGui::DestroyContext();
 

@@ -10,8 +10,12 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
+#include <array>
+#include <cstddef>
+#include <cstdint>
 #include <DirectXMath.h>
 #include <vulkan/vulkan.h>
 
@@ -54,6 +58,8 @@ class NOC_EXPORT Vulkan : public IRenderer
 
     Result<uint32_t> upload_material(uint32_t albedoTextureIndex, uint32_t normalTextureIndex) override;
 
+    Result<> clear_scene_content() noexcept override;
+
     // --- Delegating getters for ImGuiLayer and other consumers ---
     inline VkInstance get_instance() const noexcept
     {
@@ -75,10 +81,18 @@ class NOC_EXPORT Vulkan : public IRenderer
     {
         return m_vulkanDevice.get_present_queue();
     }
+    inline VkSampler get_sampler() const noexcept
+    {
+        return m_sampler;
+    }
     /// Returns the UI render pass (used by ImGui).
     inline VkRenderPass get_ui_render_pass() const noexcept
     {
         return m_swapchain.get_ui_render_pass();
+    }
+    inline VkImageView get_scene_color_image_view() const noexcept
+    {
+        return m_sceneColorView;
     }
     inline VkExtent2D get_swapchain_extent() const noexcept
     {
@@ -132,13 +146,31 @@ class NOC_EXPORT Vulkan : public IRenderer
     }
     uint32_t get_total_triangle_count() const noexcept
     {
-        uint32_t total = 0;
-        for (const auto& renderable : m_renderables)
-        {
-            if (renderable.meshIndex < m_meshes.size())
-                total += m_meshes[renderable.meshIndex].indexCount / 3;
-        }
-        return total;
+        return m_totalTriangleCountCached;
+    }
+    inline uint32_t get_last_visible_renderable_count() const noexcept
+    {
+        return m_lastVisibleRenderableCount;
+    }
+    inline uint32_t get_last_culled_renderable_count() const noexcept
+    {
+        return m_lastCulledRenderableCount;
+    }
+    inline uint32_t get_last_draw_call_count() const noexcept
+    {
+        return m_lastDrawCallCount;
+    }
+    inline uint32_t get_last_instanced_batch_count() const noexcept
+    {
+        return m_lastInstancedBatchCount;
+    }
+    inline uint64_t get_mesh_memory_bytes() const noexcept
+    {
+        return m_meshMemoryBytes;
+    }
+    inline uint64_t get_texture_memory_bytes() const noexcept
+    {
+        return m_textureMemoryBytes;
     }
 
     using UIRenderCallback = std::function<void(VkCommandBuffer)>;
@@ -168,10 +200,7 @@ class NOC_EXPORT Vulkan : public IRenderer
 
     /// Sets the list of renderables to draw this frame.
     /// Each Renderable contains a world matrix and a mesh index.
-    void set_renderables(std::vector<Renderable> renderables) noexcept override
-    {
-        m_renderables = std::move(renderables);
-    }
+    void set_renderables(const std::vector<Renderable>& renderables) noexcept override;
 
     /// Notifies the renderer that the framebuffer was resized.
     /// Called by the Window's framebuffer size callback.
@@ -206,10 +235,14 @@ class NOC_EXPORT Vulkan : public IRenderer
     Result<> record_command_buffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) noexcept;
     Result<> create_sync_objects();
     Result<> recreate_swap_chain();
+    Result<> ensure_instance_buffer_capacity(std::size_t requiredInstances);
     Result<> create_sampler();
     Result<> create_default_textures();
     Result<> create_descriptor_pool();
     Result<> create_default_material();
+    void destroy_meshes() noexcept;
+    void destroy_textures() noexcept;
+    void destroy_material_pool() noexcept;
 
     // --- Offscreen scene rendering ---
     Result<> create_scene_render_pass();
@@ -222,6 +255,20 @@ class NOC_EXPORT Vulkan : public IRenderer
     Result<VkFormat> find_depth_format();
     Result<VkFormat> find_supported_format(const std::vector<VkFormat>& candidates, VkImageTiling tiling,
                                            VkFormatFeatureFlags features);
+
+    struct InstanceBatch
+    {
+        uint32_t meshIndex{0};
+        uint32_t materialIndex{0};
+        uint32_t firstInstance{0};
+        uint32_t instanceCount{0};
+    };
+
+    struct InstanceData
+    {
+        DirectX::XMFLOAT4X4 mvp{};
+        DirectX::XMFLOAT4X4 model{};
+    };
 
     // --- Sub-components ---
     VulkanDevice m_vulkanDevice;
@@ -246,15 +293,31 @@ class NOC_EXPORT Vulkan : public IRenderer
 
     std::vector<Mesh> m_meshes{};
     std::vector<Renderable> m_renderables{};
+    uint32_t m_totalTriangleCountCached{0};
+    uint32_t m_lastVisibleRenderableCount{0};
+    uint32_t m_lastCulledRenderableCount{0};
+    uint32_t m_lastDrawCallCount{0};
+    uint32_t m_lastInstancedBatchCount{0};
+    uint64_t m_meshMemoryBytes{0};
+    uint64_t m_textureMemoryBytes{0};
+    std::unordered_map<std::string, uint32_t> m_meshLookup{};
 
     std::vector<GpuTexture> m_textures{};
+    std::unordered_map<std::string, uint32_t> m_textureLookup{};
     VkSampler m_sampler{VK_NULL_HANDLE};
     uint32_t m_defaultAlbedoTextureIndex{};
     uint32_t m_defaultNormalTextureIndex{};
 
     std::vector<GpuMaterial> m_materials{};
+    std::unordered_map<uint64_t, uint32_t> m_materialLookup{};
     VkDescriptorPool m_descriptorPool{VK_NULL_HANDLE};
     uint32_t m_defaultMaterialIndex{};
+
+    std::array<VkBuffer, MAX_FRAMES_IN_FLIGHT> m_instanceBuffers{};
+    std::array<VkDeviceMemory, MAX_FRAMES_IN_FLIGHT> m_instanceBufferMemories{};
+    std::size_t m_instanceBufferCapacity{0};
+    std::vector<InstanceData> m_instanceDataScratch{};
+    std::vector<InstanceBatch> m_instanceBatchesScratch{};
 
     DirectX::XMFLOAT4X4 m_viewMatrix{};
     DirectX::XMFLOAT4X4 m_projMatrix{};
