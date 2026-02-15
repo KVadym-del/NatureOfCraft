@@ -8,7 +8,11 @@
 #include "ModelData.hpp"
 #include "TextureData.hpp"
 
+#include <algorithm>
+#include <cstdint>
+#include <memory>
 #include <string_view>
+#include <thread>
 
 #include <entt/core/hashed_string.hpp>
 #include <entt/resource/cache.hpp>
@@ -28,7 +32,9 @@ NOC_SUPPRESS_DLL_WARNINGS
 class NOC_EXPORT AssetManager
 {
   public:
+    /// Constructs an empty asset manager with lazy async executor initialization.
     AssetManager();
+    /// Waits for queued async work (if any) and releases all owned caches.
     ~AssetManager();
 
     // Non-copyable, non-movable (owns executor + caches)
@@ -56,10 +62,14 @@ class NOC_EXPORT AssetManager
 
     // --- Material loading (data model ready, minimal implementation) ---
 
+    /// Inserts or replaces a material entry under the given logical name.
     entt::resource<MaterialData> load_material(std::string_view name, const MaterialData& data);
 
+    /// Returns true if a material handle for the given name is cached.
     bool contains_material(std::string_view name) const;
+    /// Returns the number of cached materials.
     size_t material_count() const noexcept;
+    /// Clears all cached material handles.
     void clear_materials() noexcept;
 
     // --- Texture loading ---
@@ -71,8 +81,11 @@ class NOC_EXPORT AssetManager
     /// Load a texture from pre-built data (e.g. programmatic textures).
     entt::resource<TextureData> load_texture(std::string_view name, const TextureData& data);
 
+    /// Returns true if a texture handle with this key is cached.
     bool contains_texture(std::string_view name) const;
+    /// Returns the number of cached textures.
     size_t texture_count() const noexcept;
+    /// Clears all cached texture handles.
     void clear_textures() noexcept;
 
     // --- Model loading (OBJ + MTL, splits by material) ---
@@ -81,8 +94,11 @@ class NOC_EXPORT AssetManager
     /// extracts texture paths, computes tangents per sub-mesh.
     entt::resource<ModelData> load_model(std::string_view path);
 
+    /// Returns true if a model handle for this path is cached.
     bool contains_model(std::string_view path) const;
+    /// Returns the number of cached models.
     size_t model_count() const noexcept;
+    /// Clears all cached model handles.
     void clear_models() noexcept;
 
     // --- Async support ---
@@ -90,7 +106,12 @@ class NOC_EXPORT AssetManager
     /// Returns a reference to the Taskflow executor for scheduling async work.
     tf::Executor& get_executor() noexcept
     {
-        return m_executor;
+        if (!m_executor)
+        {
+            const std::uint32_t workers = std::max(1u, std::thread::hardware_concurrency());
+            m_executor = std::make_unique<tf::Executor>(workers);
+        }
+        return *m_executor;
     }
 
   private:
@@ -102,7 +123,7 @@ class NOC_EXPORT AssetManager
     entt::resource_cache<TextureData, TextureLoader> m_textureCache;
     entt::resource_cache<ModelData, ModelLoader> m_modelCache;
 
-    tf::Executor m_executor;
+    std::unique_ptr<tf::Executor> m_executor;
 };
 
 NOC_RESTORE_DLL_WARNINGS

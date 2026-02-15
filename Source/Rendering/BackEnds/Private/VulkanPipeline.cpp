@@ -8,12 +8,23 @@
 VulkanPipeline::~VulkanPipeline()
 {
     cleanup();
+    release_cache();
 }
 
 Result<> VulkanPipeline::initialize(VkRenderPass renderPass, VkSampleCountFlagBits msaaSamples,
                                     const std::vector<uint32_t>& vertSpirv, const std::vector<uint32_t>& fragSpirv)
 {
     VkDevice device = m_device.get_device();
+
+    if (m_pipelineCache == VK_NULL_HANDLE)
+    {
+        VkPipelineCacheCreateInfo pipelineCacheInfo{};
+        pipelineCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+        if (vkCreatePipelineCache(device, &pipelineCacheInfo, nullptr, &m_pipelineCache) != VK_SUCCESS)
+        {
+            return make_error("Failed to create pipeline cache", ErrorCode::VulkanGraphicsPipelineCreationFailed);
+        }
+    }
 
     // 1. Create shader modules from pre-compiled SPIR-V
     auto vertShaderModuleResult = create_shader_module(vertSpirv);
@@ -199,7 +210,7 @@ Result<> VulkanPipeline::initialize(VkRenderPass renderPass, VkSampleCountFlagBi
     pipelineInfo.basePipelineHandle = nullptr;
     pipelineInfo.basePipelineIndex = -1;
 
-    if (vkCreateGraphicsPipelines(device, nullptr, 1, &pipelineInfo, nullptr, &m_graphicsPipeline) != VK_SUCCESS)
+    if (vkCreateGraphicsPipelines(device, m_pipelineCache, 1, &pipelineInfo, nullptr, &m_graphicsPipeline) != VK_SUCCESS)
     {
         vkDestroyShaderModule(device, fragShaderModule, nullptr);
         vkDestroyShaderModule(device, vertShaderModule, nullptr);
@@ -229,6 +240,22 @@ void VulkanPipeline::cleanup() noexcept
     {
         vkDestroyDescriptorSetLayout(device, m_descriptorSetLayout, nullptr);
         m_descriptorSetLayout = VK_NULL_HANDLE;
+    }
+}
+
+void VulkanPipeline::release_cache() noexcept
+{
+    VkDevice device = m_device.get_device();
+    if (device == VK_NULL_HANDLE)
+    {
+        m_pipelineCache = VK_NULL_HANDLE;
+        return;
+    }
+
+    if (m_pipelineCache != VK_NULL_HANDLE)
+    {
+        vkDestroyPipelineCache(device, m_pipelineCache, nullptr);
+        m_pipelineCache = VK_NULL_HANDLE;
     }
 }
 

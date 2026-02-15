@@ -2,17 +2,27 @@
 #include "../../Rendering/Public/Mesh.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 #include <unordered_map>
 
 #include <ModelAsset_generated.h>
 #include <flatbuffers/flatbuffers.h>
 #include <fmt/core.h>
 #include <rapidobj/rapidobj.hpp>
+#include <taskflow/taskflow.hpp>
 
 #include <DirectXMath.h>
 using namespace DirectX;
+
+static tf::Executor& model_loader_executor()
+{
+    const std::uint32_t workerCount = std::thread::hardware_concurrency();
+    static tf::Executor executor(workerCount > 0 ? workerCount : 1);
+    return executor;
+}
 
 namespace std
 {
@@ -43,9 +53,9 @@ static void compute_tangents(MeshData& mesh)
 
     for (size_t i = 0; i + 2 < idxs.size(); i += 3)
     {
-        uint32_t i0 = idxs[i + 0];
-        uint32_t i1 = idxs[i + 1];
-        uint32_t i2 = idxs[i + 2];
+        std::uint32_t i0 = idxs[i + 0];
+        std::uint32_t i1 = idxs[i + 1];
+        std::uint32_t i2 = idxs[i + 2];
         const auto& v0 = verts[i0];
         const auto& v1 = verts[i1];
         const auto& v2 = verts[i2];
@@ -67,7 +77,7 @@ static void compute_tangents(MeshData& mesh)
         float by = (du1 * dy2 - du2 * dy1) * inv;
         float bz = (du1 * dz2 - du2 * dz1) * inv;
 
-        for (uint32_t idx : {i0, i1, i2})
+        for (std::uint32_t idx : {i0, i1, i2})
         {
             tanAccum[idx].x += tx;
             tanAccum[idx].y += ty;
@@ -105,7 +115,6 @@ static void compute_tangents(MeshData& mesh)
 
 ModelLoader::result_type ModelLoader::operator()(std::string_view path) const
 {
-    // If the path is a .noc_model cache file, load from cache directly
     std::filesystem::path filePath(path);
     if (filePath.extension() == ".noc_model")
     {
@@ -119,7 +128,6 @@ ModelLoader::result_type ModelLoader::operator()(std::string_view path) const
         return nullptr;
     }
 
-    // Otherwise parse from OBJ
     auto result = parse_model(path);
     if (!result)
     {
@@ -131,13 +139,10 @@ ModelLoader::result_type ModelLoader::operator()(std::string_view path) const
 
 Result<std::shared_ptr<ModelData>> ModelLoader::parse_model(std::string_view path)
 {
-    namespace fs = std::filesystem;
-
-    fs::path filePath(path);
-    if (!fs::exists(filePath))
+    std::filesystem::path filePath(path);
+    if (!std::filesystem::exists(filePath))
         return make_error(fmt::format("Model file not found: {}", path), ErrorCode::AssetFileNotFound);
 
-    // Parse OBJ with materials
     rapidobj::Result result =
         rapidobj::ParseFile(filePath, rapidobj::MaterialLibrary::Default(rapidobj::Load::Optional));
     if (result.error)
@@ -148,10 +153,8 @@ Result<std::shared_ptr<ModelData>> ModelLoader::parse_model(std::string_view pat
     const auto numTexCoords = attrib.texcoords.size() / 2;
     const auto numNormals = attrib.normals.size() / 3;
 
-    // Directory containing the OBJ file (for resolving texture paths)
-    fs::path objDir = filePath.parent_path();
+    const std::filesystem::path objDir = filePath.parent_path();
 
-    // Extract materials from rapidobj
     std::vector<MaterialData> materials;
     for (const auto& mat : result.materials)
     {
@@ -160,15 +163,14 @@ Result<std::shared_ptr<ModelData>> ModelLoader::parse_model(std::string_view pat
         matData.albedoColor = {mat.diffuse[0], mat.diffuse[1], mat.diffuse[2], 1.0f};
 
         if (!mat.diffuse_texname.empty())
-            matData.albedoTexturePath = (objDir / mat.diffuse_texname).string();
+            matData.albedoTexturePath = objDir / mat.diffuse_texname;
 
         if (!mat.bump_texname.empty())
-            matData.normalTexturePath = (objDir / mat.bump_texname).string();
+            matData.normalTexturePath = objDir / mat.bump_texname;
 
         materials.push_back(std::move(matData));
     }
 
-    // If no materials were found, create a default one
     if (materials.empty())
     {
         MaterialData defaultMat;
@@ -176,7 +178,6 @@ Result<std::shared_ptr<ModelData>> ModelLoader::parse_model(std::string_view pat
         materials.push_back(std::move(defaultMat));
     }
 
-    // Build a vertex from rapidobj index
     auto makeVertex = [&](const rapidobj::Index& index) -> Vertex {
         Vertex vertex{};
         vertex.pos = {attrib.positions[3 * index.position_index + 0], attrib.positions[3 * index.position_index + 1],
@@ -200,100 +201,197 @@ Result<std::shared_ptr<ModelData>> ModelLoader::parse_model(std::string_view pat
         return vertex;
     };
 
-    // Collect geometry per material group.
-    // Key: material index (-1 or >= 0), Value: (vertices, indices, unique vertex map)
     struct MeshBuild
     {
         std::vector<Vertex> vertices;
-        std::vector<uint32_t> indices;
-        std::unordered_map<Vertex, uint32_t> uniqueVertices;
+        std::vector<std::uint32_t> indices;
+        std::unordered_map<Vertex, std::uint32_t> uniqueVertices;
 
         void addVertex(const Vertex& v)
         {
-            auto [it, inserted] = uniqueVertices.emplace(v, static_cast<uint32_t>(vertices.size()));
+            auto [it, inserted] = uniqueVertices.emplace(v, static_cast<std::uint32_t>(vertices.size()));
             if (inserted)
                 vertices.push_back(v);
             indices.push_back(it->second);
         }
     };
 
-    // One MeshBuild per material
     const size_t matCount = materials.size();
     std::vector<MeshBuild> meshBuilds(matCount);
 
-    for (const auto& shape : result.shapes)
+    if (result.shapes.size() <= 1)
     {
-        size_t indexOffset = 0;
-        for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); ++f)
+        if (!result.shapes.empty())
         {
-            const auto numFaceVerts = static_cast<size_t>(shape.mesh.num_face_vertices[f]);
-
-            // Determine material for this face
-            int matIdx = 0; // Default to first material
-            if (f < shape.mesh.material_ids.size())
+            const auto& shape = result.shapes[0];
+            size_t indexOffset = 0;
+            for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); ++f)
             {
-                int rawMat = shape.mesh.material_ids[f];
-                if (rawMat >= 0 && static_cast<size_t>(rawMat) < matCount)
-                    matIdx = rawMat;
-            }
+                const auto numFaceVerts = static_cast<size_t>(shape.mesh.num_face_vertices[f]);
 
-            // Validate face
-            bool faceValid = numFaceVerts >= 3;
-            if (faceValid)
-            {
-                for (size_t v = 0; v < numFaceVerts; ++v)
+                std::int32_t matIdx = 0;
+                if (f < shape.mesh.material_ids.size())
                 {
-                    const auto& idx = shape.mesh.indices[indexOffset + v];
-                    if (idx.position_index < 0 || static_cast<size_t>(idx.position_index) >= numPositions)
+                    const std::int32_t rawMat = static_cast<std::int32_t>(shape.mesh.material_ids[f]);
+                    if (rawMat >= 0 && static_cast<size_t>(rawMat) < matCount)
+                        matIdx = rawMat;
+                }
+
+                bool faceValid = numFaceVerts >= 3;
+                if (faceValid)
+                {
+                    for (size_t v = 0; v < numFaceVerts; ++v)
                     {
-                        faceValid = false;
-                        break;
+                        const auto& idx = shape.mesh.indices[indexOffset + v];
+                        if (idx.position_index < 0 || static_cast<size_t>(idx.position_index) >= numPositions)
+                        {
+                            faceValid = false;
+                            break;
+                        }
                     }
                 }
-            }
 
-            if (faceValid)
-            {
-                // Fan triangulation
-                const Vertex v0 = makeVertex(shape.mesh.indices[indexOffset]);
-                for (size_t v = 1; v + 1 < numFaceVerts; ++v)
+                if (faceValid)
                 {
-                    const Vertex v1 = makeVertex(shape.mesh.indices[indexOffset + v]);
-                    const Vertex v2 = makeVertex(shape.mesh.indices[indexOffset + v + 1]);
-                    meshBuilds[matIdx].addVertex(v0);
-                    meshBuilds[matIdx].addVertex(v1);
-                    meshBuilds[matIdx].addVertex(v2);
+                    const Vertex v0 = makeVertex(shape.mesh.indices[indexOffset]);
+                    for (size_t v = 1; v + 1 < numFaceVerts; ++v)
+                    {
+                        const Vertex v1 = makeVertex(shape.mesh.indices[indexOffset + v]);
+                        const Vertex v2 = makeVertex(shape.mesh.indices[indexOffset + v + 1]);
+                        meshBuilds[static_cast<size_t>(matIdx)].addVertex(v0);
+                        meshBuilds[static_cast<size_t>(matIdx)].addVertex(v1);
+                        meshBuilds[static_cast<size_t>(matIdx)].addVertex(v2);
+                    }
+                }
+
+                indexOffset += numFaceVerts;
+            }
+        }
+    }
+    else
+    {
+        using MaterialMeshBuildMap = std::unordered_map<std::int32_t, MeshBuild>;
+        std::vector<MaterialMeshBuildMap> perShapeBuilds(result.shapes.size());
+
+        auto build_shape_geometry = [&](size_t shapeIndex) {
+            const auto& shape = result.shapes[shapeIndex];
+            auto& shapeBuilds = perShapeBuilds[shapeIndex];
+
+            size_t indexOffset = 0;
+            for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); ++f)
+            {
+                const auto numFaceVerts = static_cast<size_t>(shape.mesh.num_face_vertices[f]);
+
+                std::int32_t matIdx = 0;
+                if (f < shape.mesh.material_ids.size())
+                {
+                    const std::int32_t rawMat = static_cast<std::int32_t>(shape.mesh.material_ids[f]);
+                    if (rawMat >= 0 && static_cast<size_t>(rawMat) < matCount)
+                        matIdx = rawMat;
+                }
+
+                bool faceValid = numFaceVerts >= 3;
+                if (faceValid)
+                {
+                    for (size_t v = 0; v < numFaceVerts; ++v)
+                    {
+                        const auto& idx = shape.mesh.indices[indexOffset + v];
+                        if (idx.position_index < 0 || static_cast<size_t>(idx.position_index) >= numPositions)
+                        {
+                            faceValid = false;
+                            break;
+                        }
+                    }
+                }
+
+                if (faceValid)
+                {
+                    auto& meshBuild = shapeBuilds[matIdx];
+                    const Vertex v0 = makeVertex(shape.mesh.indices[indexOffset]);
+                    for (size_t v = 1; v + 1 < numFaceVerts; ++v)
+                    {
+                        const Vertex v1 = makeVertex(shape.mesh.indices[indexOffset + v]);
+                        const Vertex v2 = makeVertex(shape.mesh.indices[indexOffset + v + 1]);
+                        meshBuild.addVertex(v0);
+                        meshBuild.addVertex(v1);
+                        meshBuild.addVertex(v2);
+                    }
+                }
+
+                indexOffset += numFaceVerts;
+            }
+        };
+
+        tf::Taskflow taskflow;
+        for (size_t shapeIndex = 0; shapeIndex < result.shapes.size(); ++shapeIndex)
+        {
+            taskflow.emplace([&, shapeIndex]() { build_shape_geometry(shapeIndex); });
+        }
+        model_loader_executor().run(taskflow).wait();
+
+        for (auto& shapeBuilds : perShapeBuilds)
+        {
+            for (auto& [matIdx, localBuild] : shapeBuilds)
+            {
+                if (matIdx < 0 || static_cast<size_t>(matIdx) >= matCount)
+                    continue;
+
+                auto& mergedBuild = meshBuilds[static_cast<size_t>(matIdx)];
+                for (std::uint32_t localIndex : localBuild.indices)
+                {
+                    if (localIndex >= localBuild.vertices.size())
+                        continue;
+                    mergedBuild.addVertex(localBuild.vertices[localIndex]);
                 }
             }
-
-            indexOffset += numFaceVerts;
         }
     }
 
-    // Build ModelData from the per-material mesh builds
     auto model = std::make_shared<ModelData>();
     model->name = filePath.stem().string();
-    model->sourcePath = std::string(path);
+    model->sourcePath = filePath;
     model->materials = std::move(materials);
 
+    std::vector<size_t> activeMaterialIndices;
+    activeMaterialIndices.reserve(matCount);
     for (size_t i = 0; i < matCount; ++i)
     {
-        if (meshBuilds[i].vertices.empty())
-            continue; // Skip empty material groups
-
-        MeshData meshData;
-        meshData.name = fmt::format("{}_{}", model->name, model->materials[i].name);
-        meshData.sourcePath = std::string(path);
-        meshData.vertices = std::move(meshBuilds[i].vertices);
-        meshData.indices = std::move(meshBuilds[i].indices);
-        meshData.compute_bounds();
-
-        // Compute tangents for this sub-mesh
-        compute_tangents(meshData);
-
-        model->meshes.push_back(std::move(meshData));
-        model->meshMaterialIndices.push_back(static_cast<int32_t>(i));
+        if (!meshBuilds[i].vertices.empty())
+            activeMaterialIndices.push_back(i);
     }
+
+    std::vector<MeshData> builtMeshes(activeMaterialIndices.size());
+    std::vector<std::int32_t> builtMaterialIndices(activeMaterialIndices.size(), 0);
+
+    auto build_submesh = [&](size_t outputIndex) {
+        const size_t materialIndex = activeMaterialIndices[outputIndex];
+        MeshData meshData;
+        meshData.name = fmt::format("{}_{}", model->name, model->materials[materialIndex].name);
+        meshData.sourcePath = model->sourcePath;
+        meshData.vertices = std::move(meshBuilds[materialIndex].vertices);
+        meshData.indices = std::move(meshBuilds[materialIndex].indices);
+        meshData.compute_bounds();
+        compute_tangents(meshData);
+        builtMeshes[outputIndex] = std::move(meshData);
+        builtMaterialIndices[outputIndex] = static_cast<std::int32_t>(materialIndex);
+    };
+
+    if (activeMaterialIndices.size() > 1)
+    {
+        tf::Taskflow taskflow;
+        for (size_t outputIndex = 0; outputIndex < activeMaterialIndices.size(); ++outputIndex)
+        {
+            taskflow.emplace([&, outputIndex]() { build_submesh(outputIndex); });
+        }
+        model_loader_executor().run(taskflow).wait();
+    }
+    else if (!activeMaterialIndices.empty())
+    {
+        build_submesh(0);
+    }
+
+    model->meshes = std::move(builtMeshes);
+    model->meshMaterialIndices = std::move(builtMaterialIndices);
 
     if (model->meshes.empty())
         return make_error("Model has no valid geometry", ErrorCode::AssetInvalidData);
@@ -308,24 +406,22 @@ Result<std::shared_ptr<ModelData>> ModelLoader::parse_model(std::string_view pat
 
 namespace fb = NatureOfCraft::Assets;
 
-std::string ModelLoader::get_cache_path(std::string_view sourcePath)
+std::filesystem::path ModelLoader::get_cache_path(std::string_view sourcePath)
 {
     std::filesystem::path p(sourcePath);
     p.replace_extension(".noc_model");
-    return p.string();
+    return p;
 }
 
 Result<> ModelLoader::write_cache(const ModelData& model, std::string_view cachePath)
 {
     flatbuffers::FlatBufferBuilder fbb(4096);
 
-    // Serialize sub-meshes
     std::vector<flatbuffers::Offset<fb::SubMeshAsset>> meshOffsets;
     meshOffsets.reserve(model.meshes.size());
 
     for (const auto& mesh : model.meshes)
     {
-        // Convert vertices to FlatBuffer structs
         std::vector<fb::MVertexData> fbVerts;
         fbVerts.reserve(mesh.vertices.size());
         for (const auto& v : mesh.vertices)
@@ -338,32 +434,32 @@ Result<> ModelLoader::write_cache(const ModelData& model, std::string_view cache
         fb::MVec3 bMin(mesh.boundsMin.x, mesh.boundsMin.y, mesh.boundsMin.z);
         fb::MVec3 bMax(mesh.boundsMax.x, mesh.boundsMax.y, mesh.boundsMax.z);
 
-        meshOffsets.push_back(
-            fb::CreateSubMeshAssetDirect(fbb, mesh.name.c_str(), &fbVerts, &mesh.indices, &bMin, &bMax));
+        meshOffsets.push_back(fb::CreateSubMeshAssetDirect(fbb, mesh.name.c_str(), &fbVerts, &mesh.indices, &bMin, &bMax));
     }
 
-    // Serialize materials
     std::vector<flatbuffers::Offset<fb::MaterialEntry>> matOffsets;
     matOffsets.reserve(model.materials.size());
 
     for (const auto& mat : model.materials)
     {
         fb::MColor4 albedoCol(mat.albedoColor.x, mat.albedoColor.y, mat.albedoColor.z, mat.albedoColor.w);
+        const std::string albedoPath = mat.albedoTexturePath.empty() ? std::string{} : mat.albedoTexturePath.generic_string();
+        const std::string normalPath = mat.normalTexturePath.empty() ? std::string{} : mat.normalTexturePath.generic_string();
+        const std::string roughnessPath =
+            mat.roughnessTexturePath.empty() ? std::string{} : mat.roughnessTexturePath.generic_string();
 
         matOffsets.push_back(fb::CreateMaterialEntryDirect(
             fbb, mat.name.c_str(), &albedoCol, mat.roughness, mat.metallic,
-            mat.albedoTexturePath.empty() ? nullptr : mat.albedoTexturePath.c_str(),
-            mat.normalTexturePath.empty() ? nullptr : mat.normalTexturePath.c_str(),
-            mat.roughnessTexturePath.empty() ? nullptr : mat.roughnessTexturePath.c_str()));
+            albedoPath.empty() ? nullptr : albedoPath.c_str(), normalPath.empty() ? nullptr : normalPath.c_str(),
+            roughnessPath.empty() ? nullptr : roughnessPath.c_str()));
     }
 
-    // Build the top-level ModelAsset
-    auto asset = fb::CreateModelAssetDirect(fbb, model.name.c_str(), model.sourcePath.c_str(), &meshOffsets,
+    const std::string modelSourcePath = model.sourcePath.generic_string();
+    auto asset = fb::CreateModelAssetDirect(fbb, model.name.c_str(), modelSourcePath.c_str(), &meshOffsets,
                                             &matOffsets, &model.meshMaterialIndices);
 
     fb::FinishModelAssetBuffer(fbb, asset);
 
-    // Write to disk
     std::ofstream file(std::string(cachePath), std::ios::binary);
     if (!file.is_open())
         return make_error(fmt::format("Failed to open model cache for writing: {}", cachePath),
@@ -387,10 +483,9 @@ Result<std::shared_ptr<ModelData>> ModelLoader::read_cache(std::string_view cach
         return make_error(fmt::format("Model cache file is empty: {}", cachePath), ErrorCode::AssetCacheReadFailed);
 
     file.seekg(0, std::ios::beg);
-    std::vector<uint8_t> buffer(static_cast<size_t>(fileSize));
+    std::vector<std::uint8_t> buffer(static_cast<size_t>(fileSize));
     file.read(reinterpret_cast<char*>(buffer.data()), fileSize);
 
-    // Verify
     flatbuffers::Verifier verifier(buffer.data(), buffer.size());
     if (!fb::VerifyModelAssetBuffer(verifier))
         return make_error(fmt::format("Model cache verification failed: {}", cachePath),
@@ -408,7 +503,6 @@ Result<std::shared_ptr<ModelData>> ModelLoader::read_cache(std::string_view cach
     if (asset->source_path())
         model->sourcePath = asset->source_path()->str();
 
-    // Deserialize materials
     if (asset->materials())
     {
         model->materials.reserve(asset->materials()->size());
@@ -438,7 +532,6 @@ Result<std::shared_ptr<ModelData>> ModelLoader::read_cache(std::string_view cach
         }
     }
 
-    // Deserialize meshes
     if (asset->meshes())
     {
         model->meshes.reserve(asset->meshes()->size());
@@ -479,7 +572,6 @@ Result<std::shared_ptr<ModelData>> ModelLoader::read_cache(std::string_view cach
         }
     }
 
-    // Deserialize mesh-material indices
     if (asset->mesh_material_indices())
     {
         const auto* indices = asset->mesh_material_indices();

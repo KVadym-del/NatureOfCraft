@@ -3,6 +3,7 @@
 #include "../../Core/Public/Expected.hpp"
 #include "../Public/ModelData.hpp"
 
+#include <filesystem>
 #include <memory>
 #include <string_view>
 
@@ -38,5 +39,5 @@ struct NOC_EXPORT ModelLoader
 
     /// Returns the cache file path for a given source path.
     /// e.g. "Models/tower.obj" -> "Models/tower.noc_model"
-    static std::string get_cache_path(std::string_view sourcePath);
+    static std::filesystem::path get_cache_path(std::string_view sourcePath);
 };

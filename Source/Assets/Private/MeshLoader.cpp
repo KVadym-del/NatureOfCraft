@@ -3,6 +3,7 @@
 #include "../Public/MeshData.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -31,18 +32,17 @@ template <> struct hash<Vertex>
 };
 } // namespace std
 
-std::string MeshLoader::get_cache_path(std::string_view sourcePath)
+std::filesystem::path MeshLoader::get_cache_path(std::string_view sourcePath)
 {
     std::filesystem::path p(sourcePath);
     p.replace_extension(".noc_mesh");
-    return p.string();
+    return p;
 }
 
 MeshLoader::result_type MeshLoader::operator()(std::string_view path) const
 {
-    std::string cachePath = get_cache_path(path);
+    const std::filesystem::path cachePath = get_cache_path(path);
 
-    // Check if the binary cache is newer than the source file
     if (std::filesystem::exists(cachePath) && std::filesystem::exists(path))
     {
         auto sourceTime = std::filesystem::last_write_time(std::filesystem::path(path));
@@ -50,18 +50,16 @@ MeshLoader::result_type MeshLoader::operator()(std::string_view path) const
 
         if (cacheTime >= sourceTime)
         {
-            auto cached = read_cache(cachePath);
+            auto cached = read_cache(cachePath.string());
             if (cached)
             {
-                fmt::print("Loaded mesh from cache: {}\n", cachePath);
+                fmt::print("Loaded mesh from cache: {}\n", cachePath.generic_string());
                 return cached.value();
             }
-            // Cache read failed, fall through to re-parse
             fmt::print("Cache read failed, re-parsing: {}\n", path);
         }
     }
 
-    // Parse OBJ
     auto parsed = parse_obj(path);
     if (!parsed)
     {
@@ -69,15 +67,14 @@ MeshLoader::result_type MeshLoader::operator()(std::string_view path) const
         return nullptr;
     }
 
-    // Write cache for next time
-    auto writeResult = write_cache(*parsed.value(), cachePath);
+    auto writeResult = write_cache(*parsed.value(), cachePath.string());
     if (!writeResult)
     {
         fmt::print("WARNING: Failed to write mesh cache: {}\n", writeResult.error().message);
     }
     else
     {
-        fmt::print("Wrote mesh cache: {}\n", cachePath);
+        fmt::print("Wrote mesh cache: {}\n", cachePath.generic_string());
     }
 
     return parsed.value();
@@ -96,8 +93,8 @@ Result<std::shared_ptr<MeshData>> MeshLoader::parse_obj(std::string_view path)
         return make_error(result.error.code.message(), ErrorCode::AssetParsingFailed);
 
     std::vector<Vertex> vertices{};
-    std::vector<uint32_t> indices{};
-    std::unordered_map<Vertex, uint32_t> uniqueVertices{};
+    std::vector<std::uint32_t> indices{};
+    std::unordered_map<Vertex, std::uint32_t> uniqueVertices{};
 
     const auto& attrib = result.attributes;
     const auto numPositions = attrib.positions.size() / 3;
@@ -132,7 +129,7 @@ Result<std::shared_ptr<MeshData>> MeshLoader::parse_obj(std::string_view path)
     auto addVertex = [&](const Vertex& vertex) {
         if (uniqueVertices.count(vertex) == 0)
         {
-            uniqueVertices[vertex] = static_cast<uint32_t>(vertices.size());
+            uniqueVertices[vertex] = static_cast<std::uint32_t>(vertices.size());
             vertices.push_back(vertex);
         }
         indices.push_back(uniqueVertices[vertex]);
@@ -181,29 +178,24 @@ Result<std::shared_ptr<MeshData>> MeshLoader::parse_obj(std::string_view path)
 
     auto mesh = std::make_shared<MeshData>();
     mesh->name = filePath.stem().string();
-    mesh->sourcePath = std::string(path);
+    mesh->sourcePath = filePath;
     mesh->vertices = std::move(vertices);
     mesh->indices = std::move(indices);
     mesh->compute_bounds();
 
-    // Compute tangent vectors from UV triangle derivatives.
-    // Accumulate per-vertex tangent and bitangent, then Gram-Schmidt orthogonalize
-    // tangent against normal and derive handedness from the bitangent direction.
     {
         auto& verts = mesh->vertices;
         const auto& idxs = mesh->indices;
         const size_t vertCount = verts.size();
 
-        // Temporary accumulators for tangent (T) and bitangent (B) directions
         std::vector<XMFLOAT3> tanAccum(vertCount, {0.0f, 0.0f, 0.0f});
         std::vector<XMFLOAT3> bitanAccum(vertCount, {0.0f, 0.0f, 0.0f});
 
-        // Accumulate per-triangle tangent/bitangent
         for (size_t i = 0; i + 2 < idxs.size(); i += 3)
         {
-            uint32_t i0 = idxs[i + 0];
-            uint32_t i1 = idxs[i + 1];
-            uint32_t i2 = idxs[i + 2];
+            std::uint32_t i0 = idxs[i + 0];
+            std::uint32_t i1 = idxs[i + 1];
+            std::uint32_t i2 = idxs[i + 2];
             const auto& v0 = verts[i0];
             const auto& v1 = verts[i1];
             const auto& v2 = verts[i2];
@@ -222,21 +214,19 @@ Result<std::shared_ptr<MeshData>> MeshLoader::parse_obj(std::string_view path)
 
             float det = du1 * dv2 - du2 * dv1;
             if (std::abs(det) < 1e-8f)
-                continue; // Degenerate UV triangle
+                continue;
 
             float invDet = 1.0f / det;
 
-            // Tangent direction
             float tx = (dv2 * dx1 - dv1 * dx2) * invDet;
             float ty = (dv2 * dy1 - dv1 * dy2) * invDet;
             float tz = (dv2 * dz1 - dv1 * dz2) * invDet;
 
-            // Bitangent direction
             float bx = (du1 * dx2 - du2 * dx1) * invDet;
             float by = (du1 * dy2 - du2 * dy1) * invDet;
             float bz = (du1 * dz2 - du2 * dz1) * invDet;
 
-            for (uint32_t idx : {i0, i1, i2})
+            for (std::uint32_t idx : {i0, i1, i2})
             {
                 tanAccum[idx].x += tx;
                 tanAccum[idx].y += ty;
@@ -247,28 +237,23 @@ Result<std::shared_ptr<MeshData>> MeshLoader::parse_obj(std::string_view path)
             }
         }
 
-        // Gram-Schmidt orthogonalize tangent against normal, compute handedness
         for (size_t i = 0; i < vertCount; ++i)
         {
             XMVECTOR n = XMLoadFloat3(&verts[i].normal);
             XMVECTOR t = XMLoadFloat3(&tanAccum[i]);
             XMVECTOR b = XMLoadFloat3(&bitanAccum[i]);
 
-            // Gram-Schmidt: t' = normalize(t - n * dot(n, t))
             XMVECTOR nDotT = XMVector3Dot(n, t);
             XMVECTOR tOrtho = XMVector3Normalize(XMVectorSubtract(t, XMVectorMultiply(n, nDotT)));
 
-            // Check if tangent was valid (non-degenerate)
             if (XMVectorGetX(XMVector3Length(t)) < 1e-8f)
             {
-                // Fallback: generate an arbitrary tangent perpendicular to normal
                 XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
                 if (std::abs(XMVectorGetX(XMVector3Dot(n, up))) > 0.99f)
                     up = XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f);
                 tOrtho = XMVector3Normalize(XMVector3Cross(n, up));
             }
 
-            // Handedness: sign of dot(cross(n, t), b)
             float handedness = (XMVectorGetX(XMVector3Dot(XMVector3Cross(n, tOrtho), b)) < 0.0f) ? -1.0f : 1.0f;
 
             XMFLOAT3 tResult;
@@ -286,7 +271,6 @@ Result<> MeshLoader::write_cache(const MeshData& mesh, std::string_view cachePat
 
     flatbuffers::FlatBufferBuilder builder(1024);
 
-    // Convert vertices to FlatBuffer VertexData structs
     std::vector<fb::VertexData> fbVertices;
     fbVertices.reserve(mesh.vertices.size());
     for (const auto& v : mesh.vertices)
@@ -299,7 +283,8 @@ Result<> MeshLoader::write_cache(const MeshData& mesh, std::string_view cachePat
     fb::Vec3 bMin(mesh.boundsMin.x, mesh.boundsMin.y, mesh.boundsMin.z);
     fb::Vec3 bMax(mesh.boundsMax.x, mesh.boundsMax.y, mesh.boundsMax.z);
 
-    auto meshAsset = fb::CreateMeshAssetDirect(builder, mesh.name.c_str(), mesh.sourcePath.c_str(), &fbVertices,
+    const std::string meshSourcePath = mesh.sourcePath.generic_string();
+    auto meshAsset = fb::CreateMeshAssetDirect(builder, mesh.name.c_str(), meshSourcePath.c_str(), &fbVertices,
                                                &mesh.indices, &bMin, &bMax);
 
     fb::FinishMeshAssetBuffer(builder, meshAsset);
@@ -329,10 +314,9 @@ Result<std::shared_ptr<MeshData>> MeshLoader::read_cache(std::string_view cacheP
         return make_error(fmt::format("Cache file is empty: {}", cachePath), ErrorCode::AssetCacheReadFailed);
 
     file.seekg(0, std::ios::beg);
-    std::vector<uint8_t> buffer(static_cast<size_t>(fileSize));
+    std::vector<std::uint8_t> buffer(static_cast<size_t>(fileSize));
     file.read(reinterpret_cast<char*>(buffer.data()), fileSize);
 
-    // Verify the buffer
     flatbuffers::Verifier verifier(buffer.data(), buffer.size());
     if (!fb::VerifyMeshAssetBuffer(verifier))
         return make_error(fmt::format("Cache file verification failed: {}", cachePath),
@@ -350,7 +334,6 @@ Result<std::shared_ptr<MeshData>> MeshLoader::read_cache(std::string_view cacheP
     if (meshAsset->source_path())
         mesh->sourcePath = meshAsset->source_path()->str();
 
-    // Convert FlatBuffer vertices back to Vertex structs
     if (meshAsset->vertices())
     {
         mesh->vertices.reserve(meshAsset->vertices()->size());

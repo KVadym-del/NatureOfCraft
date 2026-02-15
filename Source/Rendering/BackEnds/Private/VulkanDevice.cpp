@@ -72,6 +72,12 @@ void VulkanDevice::cleanup() noexcept
         vkDestroyInstance(m_instance, nullptr);
         m_instance = VK_NULL_HANDLE;
     }
+    m_hasMemoryBudgetExtension = false;
+    m_getPhysicalDeviceMemoryProperties2 = nullptr;
+    m_getPhysicalDeviceMemoryProperties2KHR = nullptr;
+    m_cachedMemoryBudget = {};
+    m_hasCachedMemoryBudget = false;
+    m_lastMemoryBudgetQuery = {};
 }
 
 // --- Instance / Debug Messenger ---
@@ -261,6 +267,31 @@ Result<> VulkanDevice::pick_physical_device()
         return make_error("Failed to find a suitable GPU", ErrorCode::VulkanPhysicalDeviceSelectionFailed);
     }
 
+    m_hasMemoryBudgetExtension = false;
+    uint32_t extensionCount{};
+    vkEnumerateDeviceExtensionProperties(m_physicalDevice, nullptr, &extensionCount, nullptr);
+    if (extensionCount > 0)
+    {
+        std::vector<VkExtensionProperties> availableExtensions{extensionCount};
+        vkEnumerateDeviceExtensionProperties(m_physicalDevice, nullptr, &extensionCount, availableExtensions.data());
+        for (const auto& extension : availableExtensions)
+        {
+            if (std::strcmp(extension.extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0)
+            {
+                m_hasMemoryBudgetExtension = true;
+                break;
+            }
+        }
+    }
+
+    m_getPhysicalDeviceMemoryProperties2 = reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties2>(
+        vkGetInstanceProcAddr(m_instance, "vkGetPhysicalDeviceMemoryProperties2"));
+    m_getPhysicalDeviceMemoryProperties2KHR = reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties2KHR>(
+        vkGetInstanceProcAddr(m_instance, "vkGetPhysicalDeviceMemoryProperties2KHR"));
+    m_cachedMemoryBudget = {};
+    m_hasCachedMemoryBudget = false;
+    m_lastMemoryBudgetQuery = {};
+
     return {};
 }
 
@@ -304,6 +335,50 @@ bool VulkanDevice::check_device_extension_support(VkPhysicalDevice device) noexc
     }
 
     return requiredExtensions.empty();
+}
+
+DeviceLocalMemoryBudget VulkanDevice::get_device_local_memory_budget() const noexcept
+{
+    DeviceLocalMemoryBudget result{};
+    if (!m_hasMemoryBudgetExtension || m_instance == VK_NULL_HANDLE || m_physicalDevice == VK_NULL_HANDLE)
+        return result;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_hasCachedMemoryBudget && (now - m_lastMemoryBudgetQuery) < MemoryBudgetCacheInterval)
+        return m_cachedMemoryBudget;
+
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budgetProps{};
+    budgetProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+
+    VkPhysicalDeviceMemoryProperties2 memoryProps{};
+    memoryProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+    memoryProps.pNext = &budgetProps;
+
+    if (m_getPhysicalDeviceMemoryProperties2 != nullptr)
+    {
+        m_getPhysicalDeviceMemoryProperties2(m_physicalDevice, &memoryProps);
+    }
+    else
+    {
+        if (m_getPhysicalDeviceMemoryProperties2KHR == nullptr)
+            return result;
+        m_getPhysicalDeviceMemoryProperties2KHR(
+            m_physicalDevice, reinterpret_cast<VkPhysicalDeviceMemoryProperties2KHR*>(&memoryProps));
+    }
+
+    for (uint32_t i = 0; i < memoryProps.memoryProperties.memoryHeapCount; ++i)
+    {
+        if ((memoryProps.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) == 0)
+            continue;
+        result.usageBytes += budgetProps.heapUsage[i];
+        result.budgetBytes += budgetProps.heapBudget[i];
+    }
+
+    result.supported = result.budgetBytes > 0;
+    m_cachedMemoryBudget = result;
+    m_lastMemoryBudgetQuery = now;
+    m_hasCachedMemoryBudget = true;
+    return m_cachedMemoryBudget;
 }
 
 Result<> VulkanDevice::create_logical_device()
@@ -459,7 +534,8 @@ Result<uint32_t> VulkanDevice::find_memory_type(uint32_t typeFilter, VkMemoryPro
 }
 
 Result<> VulkanDevice::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
-                                     VkBuffer& buffer, VkDeviceMemory& bufferMemory)
+                                     VkBuffer& buffer, VkDeviceMemory& bufferMemory,
+                                     VkDeviceSize* outAllocationBytes)
 {
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -504,10 +580,13 @@ Result<> VulkanDevice::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage
         return make_error("Failed to bind buffer memory", ErrorCode::VulkanBufferCreationFailed);
     }
 
+    if (outAllocationBytes != nullptr)
+        *outAllocationBytes = allocInfo.allocationSize;
+
     return {};
 }
 
-Result<> VulkanDevice::copy_buffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
+Result<VkCommandBuffer> VulkanDevice::begin_single_time_commands()
 {
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -515,10 +594,10 @@ Result<> VulkanDevice::copy_buffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDev
     allocInfo.commandPool = m_commandPool;
     allocInfo.commandBufferCount = 1;
 
-    VkCommandBuffer commandBuffer;
+    VkCommandBuffer commandBuffer{VK_NULL_HANDLE};
     if (vkAllocateCommandBuffers(m_device, &allocInfo, &commandBuffer) != VK_SUCCESS)
     {
-        return make_error("Failed to allocate command buffer for copy", ErrorCode::VulkanCopyBufferFailed);
+        return make_error("Failed to allocate one-time command buffer", ErrorCode::VulkanCommandBufferAllocationFailed);
     }
 
     VkCommandBufferBeginInfo beginInfo{};
@@ -528,19 +607,18 @@ Result<> VulkanDevice::copy_buffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDev
     if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
     {
         vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
-        return make_error("Failed to begin command buffer for copy", ErrorCode::VulkanCopyBufferFailed);
+        return make_error("Failed to begin one-time command buffer", ErrorCode::VulkanCommandBufferRecordingFailed);
     }
 
-    VkBufferCopy copyRegion{};
-    copyRegion.srcOffset = 0;
-    copyRegion.dstOffset = 0;
-    copyRegion.size = size;
-    vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+    return commandBuffer;
+}
 
+Result<> VulkanDevice::end_single_time_commands(VkCommandBuffer commandBuffer)
+{
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
     {
         vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
-        return make_error("Failed to end command buffer for copy", ErrorCode::VulkanCopyBufferFailed);
+        return make_error("Failed to end one-time command buffer", ErrorCode::VulkanCommandBufferRecordingFailed);
     }
 
     VkSubmitInfo submitInfo{};
@@ -548,21 +626,56 @@ Result<> VulkanDevice::copy_buffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDev
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
 
-    if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VkFence transferFence{VK_NULL_HANDLE};
+    if (vkCreateFence(m_device, &fenceInfo, nullptr, &transferFence) != VK_SUCCESS)
     {
         vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
-        return make_error("Failed to submit copy command", ErrorCode::VulkanCopyBufferFailed);
+        return make_error("Failed to create fence for one-time submit", ErrorCode::VulkanDrawFrameFailed);
     }
 
-    vkQueueWaitIdle(m_graphicsQueue);
+    if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, transferFence) != VK_SUCCESS)
+    {
+        vkDestroyFence(m_device, transferFence, nullptr);
+        vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
+        return make_error("Failed to submit one-time command buffer", ErrorCode::VulkanDrawFrameFailed);
+    }
 
+    if (vkWaitForFences(m_device, 1, &transferFence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+    {
+        vkDestroyFence(m_device, transferFence, nullptr);
+        vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
+        return make_error("Failed to wait for one-time command buffer fence", ErrorCode::VulkanDrawFrameFailed);
+    }
+
+    vkDestroyFence(m_device, transferFence, nullptr);
     vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
+    return {};
+}
+
+Result<> VulkanDevice::copy_buffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
+{
+    auto commandBufferResult = begin_single_time_commands();
+    if (!commandBufferResult)
+        return make_error(commandBufferResult.error());
+    VkCommandBuffer commandBuffer = commandBufferResult.value();
+
+    VkBufferCopy copyRegion{};
+    copyRegion.srcOffset = 0;
+    copyRegion.dstOffset = 0;
+    copyRegion.size = size;
+    vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+
+    if (auto endResult = end_single_time_commands(commandBuffer); !endResult)
+        return make_error("Failed to submit copy command", ErrorCode::VulkanCopyBufferFailed);
     return {};
 }
 
 Result<> VulkanDevice::create_image(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling,
                                     VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image,
-                                    VkDeviceMemory& imageMemory, VkSampleCountFlagBits samples)
+                                    VkDeviceMemory& imageMemory, VkSampleCountFlagBits samples,
+                                    VkDeviceSize* outAllocationBytes)
 {
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -616,6 +729,9 @@ Result<> VulkanDevice::create_image(uint32_t width, uint32_t height, VkFormat fo
         return make_error("Failed to bind image memory", ErrorCode::VulkanImageCreationFailed);
     }
 
+    if (outAllocationBytes != nullptr)
+        *outAllocationBytes = allocInfo.allocationSize;
+
     return {};
 }
 
@@ -644,29 +760,11 @@ Result<VkImageView> VulkanDevice::create_image_view(VkImage image, VkFormat form
 Result<> VulkanDevice::transition_image_layout(VkImage image, VkFormat format, VkImageLayout oldLayout,
                                                VkImageLayout newLayout)
 {
-    VkCommandBufferAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandPool = m_commandPool;
-    allocInfo.commandBufferCount = 1;
-
-    VkCommandBuffer commandBuffer;
-    if (vkAllocateCommandBuffers(m_device, &allocInfo, &commandBuffer) != VK_SUCCESS)
-    {
-        return make_error("Failed to allocate command buffer for layout transition",
-                          ErrorCode::VulkanImageLayoutTransitionFailed);
-    }
-
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-    if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
-    {
-        vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
+    auto commandBufferResult = begin_single_time_commands();
+    if (!commandBufferResult)
         return make_error("Failed to begin command buffer for layout transition",
                           ErrorCode::VulkanImageLayoutTransitionFailed);
-    }
+    VkCommandBuffer commandBuffer = commandBufferResult.value();
 
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -706,55 +804,18 @@ Result<> VulkanDevice::transition_image_layout(VkImage image, VkFormat format, V
 
     vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
-    if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
-    {
-        vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
-        return make_error("Failed to end command buffer for layout transition",
-                          ErrorCode::VulkanImageLayoutTransitionFailed);
-    }
-
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
-
-    if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
-    {
-        vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
+    if (auto endResult = end_single_time_commands(commandBuffer); !endResult)
         return make_error("Failed to submit layout transition command", ErrorCode::VulkanImageLayoutTransitionFailed);
-    }
-
-    vkQueueWaitIdle(m_graphicsQueue);
-    vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
-
     return {};
 }
 
 Result<> VulkanDevice::copy_buffer_to_image(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height)
 {
-    VkCommandBufferAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandPool = m_commandPool;
-    allocInfo.commandBufferCount = 1;
-
-    VkCommandBuffer commandBuffer;
-    if (vkAllocateCommandBuffers(m_device, &allocInfo, &commandBuffer) != VK_SUCCESS)
-    {
-        return make_error("Failed to allocate command buffer for buffer-to-image copy",
-                          ErrorCode::VulkanCopyBufferToImageFailed);
-    }
-
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-    if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
-    {
-        vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
+    auto commandBufferResult = begin_single_time_commands();
+    if (!commandBufferResult)
         return make_error("Failed to begin command buffer for buffer-to-image copy",
                           ErrorCode::VulkanCopyBufferToImageFailed);
-    }
+    VkCommandBuffer commandBuffer = commandBufferResult.value();
 
     VkBufferImageCopy region{};
     region.bufferOffset = 0;
@@ -769,26 +830,7 @@ Result<> VulkanDevice::copy_buffer_to_image(VkBuffer buffer, VkImage image, uint
 
     vkCmdCopyBufferToImage(commandBuffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
-    {
-        vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
-        return make_error("Failed to end command buffer for buffer-to-image copy",
-                          ErrorCode::VulkanCopyBufferToImageFailed);
-    }
-
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
-
-    if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
-    {
-        vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
+    if (auto endResult = end_single_time_commands(commandBuffer); !endResult)
         return make_error("Failed to submit buffer-to-image copy command", ErrorCode::VulkanCopyBufferToImageFailed);
-    }
-
-    vkQueueWaitIdle(m_graphicsQueue);
-    vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
-
     return {};
 }

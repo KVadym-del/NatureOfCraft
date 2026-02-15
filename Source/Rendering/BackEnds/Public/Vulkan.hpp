@@ -13,10 +13,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include <DirectXMath.h>
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <DirectXMath.h>
 #include <vulkan/vulkan.h>
 
 struct MeshData;    // Forward declare — full definition in Assets/Public/MeshData.hpp
@@ -172,6 +172,34 @@ class NOC_EXPORT Vulkan : public IRenderer
     {
         return m_textureMemoryBytes;
     }
+    inline uint64_t get_instance_memory_bytes() const noexcept
+    {
+        return m_instanceBufferMemoryBytes;
+    }
+    inline uint64_t get_upload_staging_memory_bytes() const noexcept
+    {
+        return m_uploadStagingMemoryBytes;
+    }
+    inline uint64_t get_scene_target_memory_bytes() const noexcept
+    {
+        return m_sceneColorMemoryBytes + m_sceneDepthMemoryBytes + m_msaaColorMemoryBytes;
+    }
+    inline uint64_t get_tracked_device_local_memory_bytes() const noexcept
+    {
+        return m_meshMemoryBytes + m_textureMemoryBytes + get_scene_target_memory_bytes();
+    }
+    inline uint64_t get_tracked_host_visible_memory_bytes() const noexcept
+    {
+        return m_instanceBufferMemoryBytes + m_uploadStagingMemoryBytes;
+    }
+    inline uint64_t get_total_tracked_memory_bytes() const noexcept
+    {
+        return get_tracked_device_local_memory_bytes() + get_tracked_host_visible_memory_bytes();
+    }
+    inline DeviceLocalMemoryBudget get_device_local_memory_budget() const noexcept
+    {
+        return m_vulkanDevice.get_device_local_memory_budget();
+    }
 
     using UIRenderCallback = std::function<void(VkCommandBuffer)>;
     inline void set_ui_render_callback(const UIRenderCallback& cb) noexcept
@@ -221,8 +249,8 @@ class NOC_EXPORT Vulkan : public IRenderer
     // --- Runtime settings (IRenderer overrides) ---
     void set_vsync(KHR_Settings mode) noexcept override;
     bool get_vsync() const noexcept override;
-    void set_msaa_samples(int samples) noexcept override;
-    int get_msaa_samples() const noexcept override;
+    void set_msaa_samples(std::int32_t samples) noexcept override;
+    std::int32_t get_msaa_samples() const noexcept override;
     void set_render_scale(float scale) noexcept override;
     float get_render_scale() const noexcept override;
 
@@ -236,6 +264,8 @@ class NOC_EXPORT Vulkan : public IRenderer
     Result<> create_sync_objects();
     Result<> recreate_swap_chain();
     Result<> ensure_instance_buffer_capacity(std::size_t requiredInstances);
+    Result<> ensure_upload_staging_capacity(VkDeviceSize requiredSize);
+    void cleanup_upload_staging_buffer() noexcept;
     Result<> create_sampler();
     Result<> create_default_textures();
     Result<> create_descriptor_pool();
@@ -300,6 +330,8 @@ class NOC_EXPORT Vulkan : public IRenderer
     uint32_t m_lastInstancedBatchCount{0};
     uint64_t m_meshMemoryBytes{0};
     uint64_t m_textureMemoryBytes{0};
+    uint64_t m_instanceBufferMemoryBytes{0};
+    uint64_t m_uploadStagingMemoryBytes{0};
     std::unordered_map<std::string, uint32_t> m_meshLookup{};
 
     std::vector<GpuTexture> m_textures{};
@@ -315,9 +347,16 @@ class NOC_EXPORT Vulkan : public IRenderer
 
     std::array<VkBuffer, MAX_FRAMES_IN_FLIGHT> m_instanceBuffers{};
     std::array<VkDeviceMemory, MAX_FRAMES_IN_FLIGHT> m_instanceBufferMemories{};
+    std::array<void*, MAX_FRAMES_IN_FLIGHT> m_instanceBufferMappings{};
+    std::array<VkDeviceSize, MAX_FRAMES_IN_FLIGHT> m_instanceBufferAllocatedBytes{};
     std::size_t m_instanceBufferCapacity{0};
     std::vector<InstanceData> m_instanceDataScratch{};
     std::vector<InstanceBatch> m_instanceBatchesScratch{};
+
+    VkBuffer m_uploadStagingBuffer{VK_NULL_HANDLE};
+    VkDeviceMemory m_uploadStagingBufferMemory{VK_NULL_HANDLE};
+    void* m_uploadStagingMapped{nullptr};
+    VkDeviceSize m_uploadStagingCapacity{0};
 
     DirectX::XMFLOAT4X4 m_viewMatrix{};
     DirectX::XMFLOAT4X4 m_projMatrix{};
@@ -330,16 +369,19 @@ class NOC_EXPORT Vulkan : public IRenderer
     VkImage m_sceneColorImage{VK_NULL_HANDLE};
     VkDeviceMemory m_sceneColorMemory{VK_NULL_HANDLE};
     VkImageView m_sceneColorView{VK_NULL_HANDLE};
+    uint64_t m_sceneColorMemoryBytes{0};
 
     // Depth (matches MSAA sample count)
     VkImage m_sceneDepthImage{VK_NULL_HANDLE};
     VkDeviceMemory m_sceneDepthMemory{VK_NULL_HANDLE};
     VkImageView m_sceneDepthView{VK_NULL_HANDLE};
+    uint64_t m_sceneDepthMemoryBytes{0};
 
     // MSAA color (only when msaaSamples > 1)
     VkImage m_msaaColorImage{VK_NULL_HANDLE};
     VkDeviceMemory m_msaaColorMemory{VK_NULL_HANDLE};
     VkImageView m_msaaColorView{VK_NULL_HANDLE};
+    uint64_t m_msaaColorMemoryBytes{0};
 
     uint32_t m_sceneRenderWidth{0};
     uint32_t m_sceneRenderHeight{0};

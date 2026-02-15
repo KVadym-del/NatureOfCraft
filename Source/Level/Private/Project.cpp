@@ -5,12 +5,12 @@
 #include <flatbuffers/flatbuffers.h>
 #include <fmt/core.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 
 namespace fb = flatbuffers;
 namespace fbp = NatureOfCraft::Project;
-namespace fs = std::filesystem;
 
 // ── Factories ────────────────────────────────────────────────────────
 
@@ -18,7 +18,7 @@ Result<Project> Project::create_new(std::string name, std::string rootPath)
 {
     // Ensure the root directory exists (create it if not).
     std::error_code ec;
-    fs::create_directories(rootPath, ec);
+    std::filesystem::create_directories(rootPath, ec);
     if (ec)
         return make_error(fmt::format("Failed to create project directory '{}': {}", rootPath, ec.message()),
                           ErrorCode::AssetCacheWriteFailed);
@@ -29,34 +29,35 @@ Result<Project> Project::create_new(std::string name, std::string rootPath)
     project.m_assetDirectory = "Assets";
 
     // Create the asset sub-directory.
-    fs::create_directories(fs::path(project.m_rootPath) / project.m_assetDirectory, ec);
+    std::filesystem::create_directories(std::filesystem::path(project.m_rootPath) / project.m_assetDirectory, ec);
     // Non-fatal if asset dir creation fails; user can create it manually.
 
     // Create Shaders sub-directory and copy default shader sources.
-    fs::path shadersDir = fs::path(project.m_rootPath) / "Assets" / "Shaders";
-    fs::create_directories(shadersDir, ec);
+    std::filesystem::path shadersDir = std::filesystem::path(project.m_rootPath) / "Assets" / "Shaders";
+    std::filesystem::create_directories(shadersDir, ec);
 
     // Copy default shaders from engine's Resources/ directory (next to executable).
     for (const auto& shaderName : {"shader.vert", "shader.frag"})
     {
-        fs::path src = fs::path("Resources") / shaderName;
-        fs::path dst = shadersDir / shaderName;
+        std::filesystem::path src = std::filesystem::path("Resources") / shaderName;
+        std::filesystem::path dst = shadersDir / shaderName;
         std::error_code copyEc;
-        fs::copy_file(src, dst, fs::copy_options::skip_existing, copyEc);
+        std::filesystem::copy_file(src, dst, std::filesystem::copy_options::skip_existing, copyEc);
         // Non-fatal: user can create shaders manually if defaults aren't found.
         if (copyEc)
             fmt::print("Warning: could not copy default shader '{}': {}\n", src.string(), copyEc.message());
     }
 
     // Create Scripts sub-directory and copy sample scripts from engine's Resources/.
-    fs::path scriptsDir = fs::path(project.m_rootPath) / "Scripts";
-    fs::create_directories(scriptsDir, ec);
+    std::filesystem::path scriptsDir = std::filesystem::path(project.m_rootPath) / "Scripts";
+    std::filesystem::create_directories(scriptsDir, ec);
 
-    fs::path sampleSrc = fs::path("Resources") / "scripts" / "spin.lua";
-    if (fs::exists(sampleSrc))
+    std::filesystem::path sampleSrc = std::filesystem::path("Resources") / "scripts" / "spin.lua";
+    if (std::filesystem::exists(sampleSrc))
     {
         std::error_code copyEc;
-        fs::copy_file(sampleSrc, scriptsDir / "spin.lua", fs::copy_options::skip_existing, copyEc);
+        std::filesystem::copy_file(sampleSrc, scriptsDir / "spin.lua", std::filesystem::copy_options::skip_existing,
+                                   copyEc);
         if (copyEc)
             fmt::print("Warning: could not copy sample script '{}': {}\n", sampleSrc.string(), copyEc.message());
     }
@@ -80,7 +81,7 @@ Result<Project> Project::load(const std::string& projectFilePath)
     if (size <= 0)
         return make_error(fmt::format("Project file is empty: {}", projectFilePath), ErrorCode::AssetParsingFailed);
 
-    std::vector<uint8_t> buffer(static_cast<size_t>(size));
+    std::vector<std::uint8_t> buffer(static_cast<size_t>(size));
     file.seekg(0);
     file.read(reinterpret_cast<char*>(buffer.data()), size);
     if (!file)
@@ -101,7 +102,7 @@ Result<Project> Project::load(const std::string& projectFilePath)
     project.m_assetDirectory = asset->asset_directory() ? asset->asset_directory()->str() : "Assets";
 
     // Derive root path from the project file location.
-    fs::path filePath(projectFilePath);
+    std::filesystem::path filePath(projectFilePath);
     project.m_rootPath = filePath.parent_path().string();
 
     // Load level entries.
@@ -171,10 +172,10 @@ void Project::remove_level(size_t index)
 
 std::string Project::get_absolute_path(const std::filesystem::path& relativePath) const
 {
-    return (fs::path(m_rootPath) / relativePath).string();
+    return (std::filesystem::path(m_rootPath) / relativePath).string();
 }
 
 std::string Project::get_project_file_path() const
 {
-    return (fs::path(m_rootPath) / (m_name + ".noc_project")).string();
+    return (std::filesystem::path(m_rootPath) / (m_name + ".noc_project")).string();
 }

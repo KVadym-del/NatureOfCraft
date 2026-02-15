@@ -31,6 +31,9 @@ class NOC_EXPORT VulkanPipeline
     /// Destroys pipeline and pipeline layout.
     void cleanup() noexcept;
 
+    /// Destroys the long-lived pipeline cache object.
+    void release_cache() noexcept;
+
     // --- Getters ---
     inline VkPipeline get_pipeline() const noexcept
     {
@@ -54,6 +57,7 @@ class NOC_EXPORT VulkanPipeline
     VkPipeline m_graphicsPipeline{};
     VkPipelineLayout m_pipelineLayout{};
     VkDescriptorSetLayout m_descriptorSetLayout{};
+    VkPipelineCache m_pipelineCache{};
 };
 
 NOC_RESTORE_DLL_WARNINGS

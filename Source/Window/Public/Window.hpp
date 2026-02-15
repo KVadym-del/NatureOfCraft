@@ -13,9 +13,9 @@ NOC_SUPPRESS_DLL_WARNINGS
 class NOC_EXPORT Window
 {
   public:
-    using FramebufferSizeCallback = std::function<void(int width, int height)>;
+    using FramebufferSizeCallback = std::function<void(std::int32_t width, std::int32_t height)>;
     using CursorPosCallback = std::function<void(double xpos, double ypos)>;
-    using MouseButtonCallback = std::function<void(int button, int action, int mods)>;
+    using MouseButtonCallback = std::function<void(std::int32_t button, std::int32_t action, std::int32_t mods)>;
     using ScrollCallback = std::function<void(double xoffset, double yoffset)>;
 
     inline Window(std::uint32_t width, std::uint32_t height, std::string_view windowTitle)
@@ -57,9 +57,10 @@ class NOC_EXPORT Window
     }
 
   private:
-    static void glfw_framebuffer_size_callback(GLFWwindow* window, int width, int height);
+    static void glfw_framebuffer_size_callback(GLFWwindow* window, std::int32_t width, std::int32_t height);
     static void glfw_cursor_pos_callback(GLFWwindow* window, double xpos, double ypos);
-    static void glfw_mouse_button_callback(GLFWwindow* window, int button, int action, int mods);
+    static void glfw_mouse_button_callback(GLFWwindow* window, std::int32_t button, std::int32_t action,
+                                           std::int32_t mods);
     static void glfw_scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 
   private:

@@ -6,13 +6,13 @@
 #include <entt/core/hashed_string.hpp>
 
 AssetManager::AssetManager()
-    : m_meshCache(MeshLoader{}), m_textureCache(TextureLoader{}), m_modelCache(ModelLoader{}),
-      m_executor(std::thread::hardware_concurrency())
+    : m_meshCache(MeshLoader{}), m_textureCache(TextureLoader{}), m_modelCache(ModelLoader{})
 {}
 
 AssetManager::~AssetManager()
 {
-    m_executor.wait_for_all();
+    if (m_executor)
+        m_executor->wait_for_all();
 }
 
 entt::id_type AssetManager::path_to_id(std::string_view path)

@@ -2,6 +2,8 @@
 #include "../../../Core/Public/Expected.hpp"
 
 #include <array>
+#include <chrono>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -36,6 +38,13 @@ struct SwapChainSupportDetails
     std::vector<VkPresentModeKHR> presentModes{};
 };
 
+struct DeviceLocalMemoryBudget
+{
+    bool supported{false};
+    uint64_t usageBytes{0};
+    uint64_t budgetBytes{0};
+};
+
 NOC_SUPPRESS_DLL_WARNINGS
 
 /// Owns the Vulkan instance, physical/logical device, surface, queues, command pool,
@@ -65,13 +74,20 @@ class NOC_EXPORT VulkanDevice
     Result<uint32_t> find_memory_type(uint32_t typeFilter, VkMemoryPropertyFlags properties);
 
     Result<> create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
-                           VkBuffer& buffer, VkDeviceMemory& bufferMemory);
+                           VkBuffer& buffer, VkDeviceMemory& bufferMemory, VkDeviceSize* outAllocationBytes = nullptr);
+
+    /// Allocates and begins a one-time command buffer from the main command pool.
+    Result<VkCommandBuffer> begin_single_time_commands();
+
+    /// Ends, submits, waits, and frees a one-time command buffer.
+    Result<> end_single_time_commands(VkCommandBuffer commandBuffer);
 
     Result<> copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size);
 
     Result<> create_image(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling,
                           VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image,
-                          VkDeviceMemory& imageMemory, VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
+                          VkDeviceMemory& imageMemory, VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
+                          VkDeviceSize* outAllocationBytes = nullptr);
 
     Result<VkImageView> create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags);
 
@@ -123,6 +139,7 @@ class NOC_EXPORT VulkanDevice
         vkGetPhysicalDeviceProperties(m_physicalDevice, &properties);
         return properties.deviceName;
     }
+    DeviceLocalMemoryBudget get_device_local_memory_budget() const noexcept;
 
   private:
     Result<> create_instance();
@@ -180,6 +197,13 @@ class NOC_EXPORT VulkanDevice
     VkQueue m_presentQueue{};
 
     VkCommandPool m_commandPool{};
+    bool m_hasMemoryBudgetExtension{false};
+    PFN_vkGetPhysicalDeviceMemoryProperties2 m_getPhysicalDeviceMemoryProperties2{nullptr};
+    PFN_vkGetPhysicalDeviceMemoryProperties2KHR m_getPhysicalDeviceMemoryProperties2KHR{nullptr};
+    mutable DeviceLocalMemoryBudget m_cachedMemoryBudget{};
+    mutable std::chrono::steady_clock::time_point m_lastMemoryBudgetQuery{};
+    mutable bool m_hasCachedMemoryBudget{false};
+    static constexpr std::chrono::milliseconds MemoryBudgetCacheInterval{250};
 };
 
 NOC_RESTORE_DLL_WARNINGS

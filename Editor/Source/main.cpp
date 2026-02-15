@@ -13,6 +13,7 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <imgui_impl_vulkan.h>
+#include <taskflow/taskflow.hpp>
 
 #include <entt/entity/registry.hpp>
 
@@ -32,8 +33,6 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-namespace fs = std::filesystem;
 
 // ── Constants ─────────────────────────────────────────────────────────
 
@@ -109,7 +108,7 @@ static const char* vk_format_name(VkFormat format)
     }
 }
 
-static const char* msaa_sample_count_name(int samples)
+static const char* msaa_sample_count_name(std::int32_t samples)
 {
     switch (samples)
     {
@@ -136,6 +135,73 @@ static float bytes_to_mib(uint64_t bytes)
 {
     return static_cast<float>(bytes) / (1024.0f * 1024.0f);
 }
+
+struct RuntimeMetrics
+{
+    static constexpr std::size_t HistorySize = 120;
+    std::array<float, HistorySize> frameTimeHistoryMs{};
+    std::size_t frameTimeWriteIndex{0};
+    std::size_t frameTimeCount{0};
+    float frameTimeSumMs{0.0f};
+
+    float frameTimeMs{0.0f};
+    float frameTimeMinMs{0.0f};
+    float frameTimeMaxMs{0.0f};
+    float fpsInstant{0.0f};
+    float fpsSmoothed{0.0f};
+    float fpsRolling{0.0f};
+
+    float cpuUpdateMs{0.0f};
+    float cpuUiBuildMs{0.0f};
+    float cpuRenderSubmitMs{0.0f};
+    float cpuFrameTotalMs{0.0f};
+
+    void update_from_delta(float deltaSeconds)
+    {
+        frameTimeMs = deltaSeconds * 1000.0f;
+        fpsInstant = (deltaSeconds > 0.0f) ? (1.0f / deltaSeconds) : 0.0f;
+
+        // Responsive smoothing: ~250ms time constant.
+        if (fpsSmoothed <= 0.0f)
+        {
+            fpsSmoothed = fpsInstant;
+        }
+        else
+        {
+            const float alpha = std::clamp(deltaSeconds / 0.25f, 0.0f, 1.0f);
+            fpsSmoothed += (fpsInstant - fpsSmoothed) * alpha;
+        }
+
+        if (frameTimeCount < HistorySize)
+        {
+            frameTimeHistoryMs[frameTimeCount] = frameTimeMs;
+            frameTimeSumMs += frameTimeMs;
+            ++frameTimeCount;
+        }
+        else
+        {
+            frameTimeSumMs -= frameTimeHistoryMs[frameTimeWriteIndex];
+            frameTimeHistoryMs[frameTimeWriteIndex] = frameTimeMs;
+            frameTimeSumMs += frameTimeMs;
+            frameTimeWriteIndex = (frameTimeWriteIndex + 1) % HistorySize;
+        }
+
+        if (frameTimeCount > 0)
+        {
+            float minMs = frameTimeHistoryMs[0];
+            float maxMs = frameTimeHistoryMs[0];
+            for (std::size_t i = 1; i < frameTimeCount; ++i)
+            {
+                minMs = std::min(minMs, frameTimeHistoryMs[i]);
+                maxMs = std::max(maxMs, frameTimeHistoryMs[i]);
+            }
+            frameTimeMinMs = minMs;
+            frameTimeMaxMs = maxMs;
+            const float avgMs = frameTimeSumMs / static_cast<float>(frameTimeCount);
+            fpsRolling = (avgMs > 0.0f) ? (1000.0f / avgMs) : 0.0f;
+        }
+    }
+};
 
 enum class ViewportAspectMode
 {
@@ -206,7 +272,7 @@ static void draw_entity_hierarchy(World& world, entt::entity entity, entt::entit
     if (mesh && mesh->meshIndex >= 0)
         label += fmt::format("  [mesh:{}]", mesh->meshIndex);
 
-    void* nodeId = reinterpret_cast<void*>(static_cast<uintptr_t>(static_cast<uint32_t>(entity)));
+    void* nodeId = reinterpret_cast<void*>(static_cast<std::uintptr_t>(static_cast<std::uint32_t>(entity)));
 
     bool open = false;
     if (hierarchy.children.empty())
@@ -234,20 +300,33 @@ static void draw_entity_hierarchy(World& world, entt::entity entity, entt::entit
 static constexpr float RAD_TO_DEG = 180.0f / 3.14159265358979323846f;
 static constexpr float DEG_TO_RAD = 3.14159265358979323846f / 180.0f;
 
-static void draw_transform_inspector(TransformComponent& t)
+static bool draw_transform_inspector(TransformComponent& t)
 {
+    bool changed = false;
+
     float pos[3] = {t.position.x, t.position.y, t.position.z};
     if (ImGui::DragFloat3("Position", pos, 0.05f))
+    {
         t.position = {pos[0], pos[1], pos[2]};
+        changed = true;
+    }
 
     DirectX::XMFLOAT3 euler = t.get_rotation_euler();
     float rot[3] = {euler.x * RAD_TO_DEG, euler.y * RAD_TO_DEG, euler.z * RAD_TO_DEG};
     if (ImGui::DragFloat3("Rotation", rot, 0.5f, -360.0f, 360.0f))
+    {
         t.set_rotation_euler(rot[0] * DEG_TO_RAD, rot[1] * DEG_TO_RAD, rot[2] * DEG_TO_RAD);
+        changed = true;
+    }
 
     float scl[3] = {t.scale.x, t.scale.y, t.scale.z};
     if (ImGui::DragFloat3("Scale", scl, 0.01f, 0.001f, 100.0f))
+    {
         t.scale = {scl[0], scl[1], scl[2]};
+        changed = true;
+    }
+
+    return changed;
 }
 
 // ── Script scanner ────────────────────────────────────────────────────
@@ -261,15 +340,17 @@ static std::vector<std::string> scan_available_scripts(const Project* project)
     if (!project)
         return {};
 
-    fs::path root(project->root_path());
-    if (!fs::exists(root))
+    std::filesystem::path root(project->root_path());
+    if (!std::filesystem::exists(root))
         return {};
 
     std::error_code ec;
-    for (const auto& entry : fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec))
+    for (const auto& entry :
+         std::filesystem::recursive_directory_iterator(root, std::filesystem::directory_options::skip_permission_denied,
+                                                       ec))
     {
         if (entry.is_regular_file() && entry.path().extension() == ".lua")
-            scripts.insert(fs::relative(entry.path(), root).generic_string());
+            scripts.insert(std::filesystem::relative(entry.path(), root).generic_string());
     }
 
     return {scripts.begin(), scripts.end()};
@@ -288,7 +369,7 @@ static std::string to_lower_copy(std::string s)
     return s;
 }
 
-static bool extension_in(const fs::path& path, const std::vector<std::string>& exts)
+static bool extension_in(const std::filesystem::path& path, const std::vector<std::string>& exts)
 {
     std::string ext = to_lower_copy(path.extension().string());
     return std::find(exts.begin(), exts.end(), ext) != exts.end();
@@ -299,8 +380,8 @@ static std::vector<ProjectAssetEntry> scan_project_assets(const Project* project
     if (!project)
         return {};
 
-    const fs::path root(project->root_path());
-    if (!fs::exists(root))
+    const std::filesystem::path root(project->root_path());
+    if (!std::filesystem::exists(root))
         return {};
 
     const std::vector<std::string> textureExts = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".dds", ".ktx", ".ktx2"};
@@ -308,15 +389,17 @@ static std::vector<ProjectAssetEntry> scan_project_assets(const Project* project
     const std::vector<std::string> scriptExts = {".lua"};
 
     std::vector<ProjectAssetEntry> assets;
-    auto collect_from_dir = [&](const fs::path& relativeDir, const std::string& category,
+    auto collect_from_dir = [&](const std::filesystem::path& relativeDir, const std::string& category,
                                 const std::vector<std::string>& allowedExts) {
         std::error_code ec;
-        fs::path absDir = root / relativeDir;
-        if (!fs::exists(absDir, ec))
+        std::filesystem::path absDir = root / relativeDir;
+        if (!std::filesystem::exists(absDir, ec))
             return;
 
         for (const auto& entry :
-             fs::recursive_directory_iterator(absDir, fs::directory_options::skip_permission_denied, ec))
+             std::filesystem::recursive_directory_iterator(absDir,
+                                                           std::filesystem::directory_options::skip_permission_denied,
+                                                           ec))
         {
             if (ec || !entry.is_regular_file())
                 continue;
@@ -329,17 +412,17 @@ static std::vector<ProjectAssetEntry> scan_project_assets(const Project* project
                 sizeBytes = 0;
 
             assets.push_back(ProjectAssetEntry{
-                fs::relative(entry.path(), root, ec).generic_string(),
+                std::filesystem::relative(entry.path(), root, ec).generic_string(),
                 category,
                 sizeBytes,
             });
         }
     };
 
-    collect_from_dir(fs::path("Assets") / "Models", "Optimized Models", {".noc_model"});
-    collect_from_dir(fs::path("Assets") / "Textures", "Textures", textureExts);
-    collect_from_dir(fs::path("Assets") / "Shaders", "Shaders", shaderExts);
-    collect_from_dir(fs::path("Scripts"), "Scripts", scriptExts);
+    collect_from_dir(std::filesystem::path("Assets") / "Models", "Optimized Models", {".noc_model"});
+    collect_from_dir(std::filesystem::path("Assets") / "Textures", "Textures", textureExts);
+    collect_from_dir(std::filesystem::path("Assets") / "Shaders", "Shaders", shaderExts);
+    collect_from_dir(std::filesystem::path("Scripts"), "Scripts", scriptExts);
 
     std::sort(assets.begin(), assets.end(), [](const ProjectAssetEntry& a, const ProjectAssetEntry& b) {
         if (a.category == b.category)
@@ -356,35 +439,183 @@ static std::vector<ProjectAssetEntry> scan_project_assets(const Project* project
 // If a project is provided, copies textures and writes a .noc_model cache
 // to the project's Assets/ directory so the project is self-contained.
 
-static std::string copy_texture_to_project(const std::string& texturePath, const Project& project)
+/// Copies a texture into the project texture directory and returns the
+/// project-relative destination path. Returns an empty path on failure.
+static std::filesystem::path copy_texture_to_project(const std::filesystem::path& texturePath, const Project& project)
 {
     if (texturePath.empty())
         return {};
 
-    fs::path srcPath(texturePath);
-    if (!fs::exists(srcPath))
+    if (!std::filesystem::exists(texturePath))
     {
-        fmt::print("Warning: texture not found, skipping copy: {}\n", texturePath);
+        fmt::print("Warning: texture not found, skipping copy: {}\n", texturePath.generic_string());
         return {};
     }
 
-    // Destination: <project>/Assets/Textures/<filename>
-    fs::path relPath = fs::path("Assets") / "Textures" / srcPath.filename();
+    const std::filesystem::path relPath = std::filesystem::path("Assets") / "Textures" / texturePath.filename();
     std::string absPath = project.get_absolute_path(relPath);
-    fs::create_directories(fs::path(absPath).parent_path());
+    std::filesystem::create_directories(std::filesystem::path(absPath).parent_path());
 
     std::error_code ec;
-    fs::copy_file(srcPath, absPath, fs::copy_options::skip_existing, ec);
+    std::filesystem::copy_file(texturePath, absPath, std::filesystem::copy_options::skip_existing, ec);
     if (ec)
-        fmt::print("Warning: failed to copy texture '{}' to '{}': {}\n", texturePath, absPath, ec.message());
+        fmt::print("Warning: failed to copy texture '{}' to '{}': {}\n", texturePath.generic_string(), absPath,
+                   ec.message());
 
-    return relPath.string();
+    return relPath;
+}
+
+/// Resolves a texture path to an absolute path when a project context exists.
+static std::filesystem::path resolve_texture_load_path(const std::filesystem::path& texturePath, const Project* project)
+{
+    if (texturePath.empty())
+        return {};
+
+    std::filesystem::path resolvedPath{texturePath};
+    if (project && !resolvedPath.is_absolute())
+        resolvedPath = std::filesystem::path(project->get_absolute_path(resolvedPath));
+    return resolvedPath;
+}
+
+/// Collects unique, resolved texture paths used by a model.
+static std::vector<std::filesystem::path> collect_model_texture_load_paths(const ModelData& model,
+                                                                            const Project* project)
+{
+    std::set<std::filesystem::path> uniqueTexturePaths;
+    for (const auto& mat : model.materials)
+    {
+        const std::filesystem::path albedoPath = resolve_texture_load_path(mat.albedoTexturePath, project);
+        if (!albedoPath.empty())
+            uniqueTexturePaths.insert(albedoPath);
+
+        const std::filesystem::path normalPath = resolve_texture_load_path(mat.normalTexturePath, project);
+        if (!normalPath.empty())
+            uniqueTexturePaths.insert(normalPath);
+    }
+
+    return {uniqueTexturePaths.begin(), uniqueTexturePaths.end()};
+}
+
+/// Ensures CPU texture data is prepared and cached for the given paths.
+/// Already-cached textures are reused; missing textures are decoded in parallel.
+static std::unordered_map<std::filesystem::path, entt::resource<TextureData>>
+prepare_texture_handles_for_paths(AssetManager& assetManager, const std::vector<std::filesystem::path>& texturePaths)
+{
+    std::set<std::filesystem::path> uniqueTexturePaths(texturePaths.begin(), texturePaths.end());
+    std::vector<std::filesystem::path> uniquePaths(uniqueTexturePaths.begin(), uniqueTexturePaths.end());
+    std::unordered_map<std::filesystem::path, entt::resource<TextureData>> textureHandles;
+    textureHandles.reserve(uniquePaths.size());
+
+    std::vector<size_t> decodeIndices;
+    decodeIndices.reserve(uniquePaths.size());
+    std::vector<std::shared_ptr<TextureData>> decoded(uniquePaths.size());
+    std::vector<Error> decodeErrors(uniquePaths.size());
+
+    for (size_t i = 0; i < uniquePaths.size(); ++i)
+    {
+        const std::string pathString = uniquePaths[i].string();
+        if (assetManager.contains_texture(pathString))
+        {
+            auto handle = assetManager.load_texture(pathString);
+            if (handle)
+                textureHandles.emplace(uniquePaths[i], handle);
+            continue;
+        }
+        decodeIndices.push_back(i);
+    }
+
+    if (!decodeIndices.empty())
+    {
+        tf::Taskflow taskflow;
+        for (size_t taskIndex = 0; taskIndex < decodeIndices.size(); ++taskIndex)
+        {
+            taskflow.emplace([&, taskIndex]() {
+                const size_t pathIndex = decodeIndices[taskIndex];
+                auto loadResult = TextureLoader::load_image(uniquePaths[pathIndex].string());
+                if (loadResult)
+                    decoded[pathIndex] = std::move(loadResult.value());
+                else
+                    decodeErrors[pathIndex] = loadResult.error();
+            });
+        }
+        assetManager.get_executor().run(taskflow).wait();
+
+        for (size_t pathIndex : decodeIndices)
+        {
+            if (!decoded[pathIndex])
+            {
+                if (!decodeErrors[pathIndex].message.empty())
+                {
+                    fmt::print("Warning: failed to decode texture '{}': {}\n",
+                               uniquePaths[pathIndex].generic_string(),
+                               decodeErrors[pathIndex].message);
+                }
+                continue;
+            }
+
+            auto handle = assetManager.load_texture(uniquePaths[pathIndex].string(), *decoded[pathIndex]);
+            if (handle)
+                textureHandles.emplace(uniquePaths[pathIndex], handle);
+        }
+    }
+
+    return textureHandles;
+}
+
+/// Convenience wrapper for preparing textures used by a single model.
+static std::unordered_map<std::filesystem::path, entt::resource<TextureData>>
+prepare_model_texture_handles(AssetManager& assetManager, const ModelData& model, const Project* project)
+{
+    return prepare_texture_handles_for_paths(assetManager, collect_model_texture_load_paths(model, project));
+}
+
+/// Uploads a material texture once and returns its GPU texture index.
+static std::uint32_t upload_material_texture(
+    const std::filesystem::path& texturePath, const char* usageLabel, const Project* project, AssetManager& assetManager,
+    IRenderer& renderer,
+    const std::unordered_map<std::filesystem::path, entt::resource<TextureData>>& preparedTextureHandles,
+    std::unordered_map<std::filesystem::path, std::uint32_t>& uploadedTextureIndices)
+{
+    const std::filesystem::path texLoadPath = resolve_texture_load_path(texturePath, project);
+    if (texLoadPath.empty())
+        return 0;
+
+    if (const auto it = uploadedTextureIndices.find(texLoadPath); it != uploadedTextureIndices.end())
+        return it->second;
+
+    entt::resource<TextureData> texHandle;
+    if (const auto preparedIt = preparedTextureHandles.find(texLoadPath);
+        preparedIt != preparedTextureHandles.end())
+    {
+        texHandle = preparedIt->second;
+    }
+    else
+    {
+        texHandle = assetManager.load_texture(texLoadPath.string());
+    }
+
+    if (!texHandle)
+    {
+        fmt::print("Warning: failed to load {} texture '{}'\n", usageLabel, texLoadPath.generic_string());
+        return 0;
+    }
+
+    auto texResult = renderer.upload_texture(*texHandle);
+    if (!texResult)
+    {
+        fmt::print("Warning: failed to upload {} texture '{}': {}\n", usageLabel, texLoadPath.generic_string(),
+                   texResult.error().message);
+        return 0;
+    }
+
+    const std::uint32_t textureIndex = texResult.value();
+    uploadedTextureIndices.emplace(texLoadPath, textureIndex);
+    return textureIndex;
 }
 
 static bool import_model(std::string_view objPath, AssetManager& assetManager, IRenderer& renderer, World& world,
                          StatusMessage& status, Project* project)
 {
-    // Load model from OBJ + MTL
     entt::resource<ModelData> modelHandle;
     try
     {
@@ -402,10 +633,8 @@ static bool import_model(std::string_view objPath, AssetManager& assetManager, I
         return false;
     }
 
-    // Work on a mutable copy so we can rewrite texture paths for caching
     ModelData model = *modelHandle;
 
-    // If we have a project, copy textures and rewrite paths to be project-relative
     std::string cachedAssetPath;
     if (project)
     {
@@ -416,14 +645,13 @@ static bool import_model(std::string_view objPath, AssetManager& assetManager, I
             mat.roughnessTexturePath = copy_texture_to_project(mat.roughnessTexturePath, *project);
         }
 
-        // Write .noc_model cache to project's Assets/Models/
         std::string modelName = model.name;
         if (modelName.empty())
-            modelName = fs::path(objPath).stem().string();
+            modelName = std::filesystem::path(objPath).stem().string();
 
-        fs::path cacheRelPath = fs::path("Assets") / "Models" / (modelName + ".noc_model");
+        std::filesystem::path cacheRelPath = std::filesystem::path("Assets") / "Models" / (modelName + ".noc_model");
         std::string cacheAbsPath = project->get_absolute_path(cacheRelPath);
-        fs::create_directories(fs::path(cacheAbsPath).parent_path());
+        std::filesystem::create_directories(std::filesystem::path(cacheAbsPath).parent_path());
 
         auto writeResult = ModelLoader::write_cache(model, cacheAbsPath);
         if (writeResult)
@@ -434,51 +662,29 @@ static bool import_model(std::string_view objPath, AssetManager& assetManager, I
         else
         {
             fmt::print("Warning: failed to write model cache: {}\n", writeResult.error().message);
-            // Fall back to storing the original OBJ path
             cachedAssetPath = std::string(objPath);
         }
     }
     else
     {
-        // No project: store original path
         cachedAssetPath = std::string(objPath);
     }
 
-    // Upload textures and materials to GPU
-    // Texture paths in 'model' are now project-relative if we have a project,
-    // so resolve them to absolute paths for loading.
-    std::vector<uint32_t> gpuMaterialIndices;
+    const auto preparedTextureHandles = prepare_model_texture_handles(assetManager, model, project);
+    std::unordered_map<std::filesystem::path, std::uint32_t> uploadedTextureIndices;
+    uploadedTextureIndices.reserve(preparedTextureHandles.size());
+
+    std::vector<std::uint32_t> gpuMaterialIndices;
     gpuMaterialIndices.reserve(model.materials.size());
 
     for (const auto& mat : model.materials)
     {
-        uint32_t albedoTexIdx = 0;
-        if (!mat.albedoTexturePath.empty())
-        {
-            std::string texLoadPath =
-                project ? project->get_absolute_path(mat.albedoTexturePath) : mat.albedoTexturePath;
-            auto texHandle = assetManager.load_texture(texLoadPath);
-            auto texResult = renderer.upload_texture(*texHandle);
-            if (texResult)
-                albedoTexIdx = texResult.value();
-            else
-                fmt::print("Warning: failed to upload albedo texture '{}': {}\n", texLoadPath,
-                           texResult.error().message);
-        }
-
-        uint32_t normalTexIdx = 0;
-        if (!mat.normalTexturePath.empty())
-        {
-            std::string texLoadPath =
-                project ? project->get_absolute_path(mat.normalTexturePath) : mat.normalTexturePath;
-            auto texHandle = assetManager.load_texture(texLoadPath);
-            auto texResult = renderer.upload_texture(*texHandle);
-            if (texResult)
-                normalTexIdx = texResult.value();
-            else
-                fmt::print("Warning: failed to upload normal texture '{}': {}\n", texLoadPath,
-                           texResult.error().message);
-        }
+        const std::uint32_t albedoTexIdx =
+            upload_material_texture(mat.albedoTexturePath, "albedo", project, assetManager, renderer,
+                                    preparedTextureHandles, uploadedTextureIndices);
+        const std::uint32_t normalTexIdx =
+            upload_material_texture(mat.normalTexturePath, "normal", project, assetManager, renderer,
+                                    preparedTextureHandles, uploadedTextureIndices);
 
         auto matResult = renderer.upload_material(albedoTexIdx, normalTexIdx);
         if (matResult)
@@ -490,14 +696,13 @@ static bool import_model(std::string_view objPath, AssetManager& assetManager, I
         }
     }
 
-    // Create entity hierarchy
     std::string modelName = model.name;
     if (modelName.empty())
-        modelName = fs::path(objPath).stem().string();
+        modelName = std::filesystem::path(objPath).stem().string();
 
     entt::entity modelRoot = world.create_entity(modelName);
 
-    uint32_t meshesUploaded = 0;
+    std::uint32_t meshesUploaded = 0;
     for (size_t i = 0; i < model.meshes.size(); ++i)
     {
         auto uploadResult = renderer.upload_mesh(model.meshes[i]);
@@ -506,19 +711,19 @@ static bool import_model(std::string_view objPath, AssetManager& assetManager, I
             fmt::print("Failed to upload mesh '{}': {}\n", model.meshes[i].name, uploadResult.error().message);
             continue;
         }
-        uint32_t meshIdx = uploadResult.value();
+        std::uint32_t meshIdx = uploadResult.value();
 
         std::string nodeName = model.meshes[i].name.empty() ? fmt::format("SubMesh_{}", i) : model.meshes[i].name;
         entt::entity meshEntity = world.create_entity(std::move(nodeName));
         world.set_parent(meshEntity, modelRoot);
 
         auto& mc = world.registry().emplace<MeshComponent>(meshEntity);
-        mc.meshIndex = static_cast<int32_t>(meshIdx);
+        mc.meshIndex = static_cast<std::int32_t>(meshIdx);
         mc.assetPath = cachedAssetPath;
 
-        int32_t matMapIdx = model.meshMaterialIndices[i];
+        std::int32_t matMapIdx = model.meshMaterialIndices[i];
         if (matMapIdx >= 0 && static_cast<size_t>(matMapIdx) < gpuMaterialIndices.size())
-            mc.materialIndex = static_cast<int32_t>(gpuMaterialIndices[matMapIdx]);
+            mc.materialIndex = static_cast<std::int32_t>(gpuMaterialIndices[matMapIdx]);
 
         ++meshesUploaded;
     }
@@ -526,20 +731,19 @@ static bool import_model(std::string_view objPath, AssetManager& assetManager, I
     status = {
         fmt::format("Imported '{}': {} meshes, {} materials", modelName, meshesUploaded, gpuMaterialIndices.size()),
         false, 5.0f};
+    world.mark_renderables_dirty();
 
     return true;
 }
 
-// ── Reload level assets helper ────────────────────────────────────────
-// When a level is loaded from disk, MeshComponent entities have stale GPU indices.
-// This function re-imports all referenced models, uploads them to the GPU, and
-// updates every MeshComponent with fresh indices by matching entity names to
-// mesh names in the model.
+/// Rebuilds GPU mesh/material indices for all level mesh components.
 
 struct MeshGpuInfo
 {
-    int32_t gpuMeshIndex{-1};
-    int32_t gpuMaterialIndex{0};
+    /// Renderer mesh index returned by upload_mesh.
+    std::int32_t gpuMeshIndex{-1};
+    /// Renderer material index assigned for this mesh.
+    std::int32_t gpuMaterialIndex{0};
 };
 
 static void reload_level_assets(AssetManager& assetManager, IRenderer& renderer, World& world, StatusMessage& status,
@@ -547,7 +751,6 @@ static void reload_level_assets(AssetManager& assetManager, IRenderer& renderer,
 {
     auto& reg = world.registry();
 
-    // 1. Collect unique asset paths from all MeshComponents
     std::set<std::string> uniquePaths;
     auto meshView = reg.view<MeshComponent>();
     for (auto entity : meshView)
@@ -560,68 +763,67 @@ static void reload_level_assets(AssetManager& assetManager, IRenderer& renderer,
     if (uniquePaths.empty())
         return;
 
-    // 2. For each unique asset path, load model & upload GPU resources.
-    //    Build mapping: assetPath -> (meshName -> MeshGpuInfo)
     std::unordered_map<std::string, std::unordered_map<std::string, MeshGpuInfo>> assetMeshMap;
 
-    uint32_t totalMeshes = 0;
-    uint32_t totalMaterials = 0;
+    std::uint32_t totalMeshes = 0;
+    std::uint32_t totalMaterials = 0;
+    struct LoadedModelEntry
+    {
+        std::string assetPath;
+        entt::resource<ModelData> modelHandle;
+    };
+    std::vector<LoadedModelEntry> loadedModels;
+    loadedModels.reserve(uniquePaths.size());
+    std::set<std::filesystem::path> uniqueTextureLoadPaths;
 
     for (const auto& assetPath : uniquePaths)
     {
-        // Resolve project-relative paths to absolute for loading
-        std::string loadPath =
-            (project && !fs::path(assetPath).is_absolute()) ? project->get_absolute_path(assetPath) : assetPath;
+        std::filesystem::path loadPath = resolve_texture_load_path(assetPath, project);
 
         entt::resource<ModelData> modelHandle;
         try
         {
-            modelHandle = assetManager.load_model(loadPath);
+            modelHandle = assetManager.load_model(loadPath.string());
         }
         catch (const std::exception& e)
         {
-            fmt::print("Warning: failed to reload model '{}': {}\n", loadPath, e.what());
+            fmt::print("Warning: failed to reload model '{}': {}\n", loadPath.generic_string(), e.what());
             continue;
         }
 
         if (!modelHandle)
         {
-            fmt::print("Warning: failed to reload model '{}'\n", loadPath);
+            fmt::print("Warning: failed to reload model '{}'\n", loadPath.generic_string());
             continue;
         }
 
-        const ModelData& model = *modelHandle;
+        for (const auto& texturePath : collect_model_texture_load_paths(*modelHandle, project))
+            uniqueTextureLoadPaths.insert(texturePath);
 
-        // Upload textures and materials
-        std::vector<uint32_t> gpuMaterialIndices;
+        loadedModels.push_back({assetPath, modelHandle});
+    }
+
+    const std::vector<std::filesystem::path> allTextureLoadPaths(uniqueTextureLoadPaths.begin(),
+                                                                 uniqueTextureLoadPaths.end());
+    const auto preparedTextureHandles = prepare_texture_handles_for_paths(assetManager, allTextureLoadPaths);
+    std::unordered_map<std::filesystem::path, std::uint32_t> uploadedTextureIndices;
+    uploadedTextureIndices.reserve(preparedTextureHandles.size());
+
+    for (const auto& loadedModel : loadedModels)
+    {
+        const ModelData& model = *loadedModel.modelHandle;
+
+        std::vector<std::uint32_t> gpuMaterialIndices;
         gpuMaterialIndices.reserve(model.materials.size());
 
         for (const auto& mat : model.materials)
         {
-            uint32_t albedoTexIdx = 0;
-            if (!mat.albedoTexturePath.empty())
-            {
-                // Texture paths in .noc_model are project-relative; resolve them
-                std::string texLoadPath = (project && !fs::path(mat.albedoTexturePath).is_absolute())
-                                              ? project->get_absolute_path(mat.albedoTexturePath)
-                                              : mat.albedoTexturePath;
-                auto texHandle = assetManager.load_texture(texLoadPath);
-                auto texResult = renderer.upload_texture(*texHandle);
-                if (texResult)
-                    albedoTexIdx = texResult.value();
-            }
-
-            uint32_t normalTexIdx = 0;
-            if (!mat.normalTexturePath.empty())
-            {
-                std::string texLoadPath = (project && !fs::path(mat.normalTexturePath).is_absolute())
-                                              ? project->get_absolute_path(mat.normalTexturePath)
-                                              : mat.normalTexturePath;
-                auto texHandle = assetManager.load_texture(texLoadPath);
-                auto texResult = renderer.upload_texture(*texHandle);
-                if (texResult)
-                    normalTexIdx = texResult.value();
-            }
+            const std::uint32_t albedoTexIdx =
+                upload_material_texture(mat.albedoTexturePath, "albedo", project, assetManager, renderer,
+                                        preparedTextureHandles, uploadedTextureIndices);
+            const std::uint32_t normalTexIdx =
+                upload_material_texture(mat.normalTexturePath, "normal", project, assetManager, renderer,
+                                        preparedTextureHandles, uploadedTextureIndices);
 
             auto matResult = renderer.upload_material(albedoTexIdx, normalTexIdx);
             if (matResult)
@@ -629,11 +831,9 @@ static void reload_level_assets(AssetManager& assetManager, IRenderer& renderer,
             else
                 gpuMaterialIndices.push_back(0);
         }
-        totalMaterials += static_cast<uint32_t>(gpuMaterialIndices.size());
+        totalMaterials += static_cast<std::uint32_t>(gpuMaterialIndices.size());
 
-        // Upload meshes and build name -> gpu info mapping
-        auto& nameMap = assetMeshMap[assetPath];
-
+        auto& nameMap = assetMeshMap[loadedModel.assetPath];
         for (size_t i = 0; i < model.meshes.size(); ++i)
         {
             auto uploadResult = renderer.upload_mesh(model.meshes[i]);
@@ -645,13 +845,12 @@ static void reload_level_assets(AssetManager& assetManager, IRenderer& renderer,
             }
 
             MeshGpuInfo info;
-            info.gpuMeshIndex = static_cast<int32_t>(uploadResult.value());
+            info.gpuMeshIndex = static_cast<std::int32_t>(uploadResult.value());
 
-            int32_t matMapIdx = model.meshMaterialIndices[i];
+            std::int32_t matMapIdx = model.meshMaterialIndices[i];
             if (matMapIdx >= 0 && static_cast<size_t>(matMapIdx) < gpuMaterialIndices.size())
-                info.gpuMaterialIndex = static_cast<int32_t>(gpuMaterialIndices[matMapIdx]);
+                info.gpuMaterialIndex = static_cast<std::int32_t>(gpuMaterialIndices[matMapIdx]);
 
-            // Key by mesh name (same name used when creating entities during import)
             std::string meshName = model.meshes[i].name.empty() ? fmt::format("SubMesh_{}", i) : model.meshes[i].name;
             nameMap[meshName] = info;
 
@@ -659,8 +858,7 @@ static void reload_level_assets(AssetManager& assetManager, IRenderer& renderer,
         }
     }
 
-    // 3. Update every MeshComponent entity with fresh GPU indices
-    uint32_t updatedCount = 0;
+    std::uint32_t updatedCount = 0;
     for (auto entity : meshView)
     {
         auto& mc = meshView.get<MeshComponent>(entity);
@@ -670,12 +868,10 @@ static void reload_level_assets(AssetManager& assetManager, IRenderer& renderer,
         auto assetIt = assetMeshMap.find(mc.assetPath);
         if (assetIt == assetMeshMap.end())
         {
-            // Model failed to load; mark mesh as invalid
             mc.meshIndex = -1;
             continue;
         }
 
-        // Match entity name to mesh name in the model
         const auto* nameComp = reg.try_get<NameComponent>(entity);
         if (!nameComp)
         {
@@ -692,7 +888,6 @@ static void reload_level_assets(AssetManager& assetManager, IRenderer& renderer,
         }
         else
         {
-            // Entity name doesn't match any mesh name — stale data
             fmt::print("Warning: entity '{}' has assetPath '{}' but no matching mesh name\n", nameComp->name,
                        mc.assetPath);
             mc.meshIndex = -1;
@@ -702,6 +897,7 @@ static void reload_level_assets(AssetManager& assetManager, IRenderer& renderer,
     status = {fmt::format("Reloaded assets: {} meshes, {} materials ({} entities updated)", totalMeshes, totalMaterials,
                           updatedCount),
               false, 5.0f};
+    world.mark_renderables_dirty();
 }
 
 // ── Status message display ────────────────────────────────────────────
@@ -736,7 +932,8 @@ int main()
     Vulkan vulkan{window.get_glfw_window()};
     IRenderer& renderer = vulkan;
 
-    window.set_framebuffer_size_callback([&renderer](int, int) { renderer.on_framebuffer_resized(); });
+    window.set_framebuffer_size_callback(
+        [&renderer](std::int32_t, std::int32_t) { renderer.on_framebuffer_resized(); });
 
     if (auto code = get_error_code(renderer.initialize()); code != 0)
         return code;
@@ -761,7 +958,7 @@ int main()
 
     StatusMessage statusMessage;
     entt::entity selectedEntity = entt::null;
-    static int addedEntityCount = 0;
+    static std::int32_t addedEntityCount = 0;
 
     // Input buffers for ImGui text fields
     char projectNameBuf[256] = "MyProject";
@@ -779,10 +976,11 @@ int main()
     bool showSceneHierarchyPanel = true;
     bool showInspectorPanel = true;
     bool showAssetManagerPanel = true;
+    bool showDetailedMetrics = false;
 
     struct GraphicsSettingsDraft
     {
-        int msaaSamples{1};
+        std::int32_t msaaSamples{1};
         float renderScale{1.0f};
         KHR_Settings presentMode{KHR_Settings::VSync};
         bool initialized{false};
@@ -793,7 +991,7 @@ int main()
 
     std::vector<ProjectAssetEntry> projectAssetsCache;
     bool projectAssetsDirty{true};
-    int selectedProjectAsset{-1};
+    std::int32_t selectedProjectAsset{-1};
     char assetFilterBuf[256] = "";
     bool requestDefaultDockLayout{true};
 
@@ -876,6 +1074,7 @@ int main()
         showSceneHierarchyPanel = true;
         showInspectorPanel = true;
         showAssetManagerPanel = true;
+        showDetailedMetrics = false;
         graphicsDraft.initialized = false;
         graphicsDraft.dirty = false;
         graphicsApplyRequested = false;
@@ -890,9 +1089,9 @@ int main()
         // Point the renderer at the project's shader sources (if available)
         if (project)
         {
-            fs::path vertShader = project->get_absolute_path("Assets/Shaders/shader.vert");
-            fs::path fragShader = project->get_absolute_path("Assets/Shaders/shader.frag");
-            if (fs::exists(vertShader) && fs::exists(fragShader))
+            std::filesystem::path vertShader = project->get_absolute_path("Assets/Shaders/shader.vert");
+            std::filesystem::path fragShader = project->get_absolute_path("Assets/Shaders/shader.frag");
+            if (std::filesystem::exists(vertShader) && std::filesystem::exists(fragShader))
                 renderer.set_shader_paths(vertShader, fragShader);
         }
 
@@ -941,7 +1140,7 @@ int main()
     double lastMouseY = 0.0;
     bool firstMouse = true;
 
-    window.set_mouse_button_callback([&](int button, int action, int /*mods*/) {
+    window.set_mouse_button_callback([&](std::int32_t button, std::int32_t action, std::int32_t /*mods*/) {
         ImGuiIO& io = ImGui::GetIO();
         if (editorState != EditorState::LevelEditor)
             return;
@@ -1012,24 +1211,35 @@ int main()
     // Frame timing
     float deltaTime = 0.0f;
     float fpsSmoothed = 0.0f;
-    auto lastFrameTime = std::chrono::high_resolution_clock::now();
+    RuntimeMetrics runtimeMetrics{};
+    auto lastFrameTime = std::chrono::steady_clock::now();
+    auto to_ms = [](auto duration) {
+        return std::chrono::duration<float, std::milli>(duration).count();
+    };
     const std::string gpuName = vulkan.get_gpu_name();
 
     // ── Main loop ─────────────────────────────────────────────────────
 
     if (auto code = get_error_code(window.loop([&]() {
             // Frame timing
-            auto now = std::chrono::high_resolution_clock::now();
+            auto now = std::chrono::steady_clock::now();
             deltaTime = std::chrono::duration<float>(now - lastFrameTime).count();
             lastFrameTime = now;
-            float instantFps = (deltaTime > 0.0f) ? 1.0f / deltaTime : 0.0f;
+            const float instantFps = (deltaTime > 0.0f) ? (1.0f / deltaTime) : 0.0f;
             fpsSmoothed = fpsSmoothed * 0.95f + instantFps * 0.05f;
+            const bool collectDetailedMetrics = showDetailedMetrics;
+            if (collectDetailedMetrics)
+                runtimeMetrics.update_from_delta(deltaTime);
+
+            std::chrono::steady_clock::time_point updateCpuStart{};
+            if (collectDetailedMetrics)
+                updateCpuStart = std::chrono::steady_clock::now();
 
             // Update camera and renderables if in level editor
             if (editorState == EditorState::LevelEditor && level)
             {
-                uint32_t rw = renderer.get_render_width();
-                uint32_t rh = renderer.get_render_height();
+                std::uint32_t rw = renderer.get_render_width();
+                std::uint32_t rh = renderer.get_render_height();
                 float ar = (rh > 0) ? static_cast<float>(rw) / static_cast<float>(rh) : 1.0f;
                 renderer.set_view_projection(cameraController.get_view_matrix(),
                                              cameraController.get_projection_matrix(ar));
@@ -1037,7 +1247,8 @@ int main()
                 World& world = level->world();
                 scriptEngine.update(world, deltaTime);
                 world.update_world_matrices();
-                renderer.set_renderables(world.collect_renderables());
+                if (world.has_renderables_updates_pending())
+                    renderer.set_renderables(world.collect_renderables());
             }
             else
             {
@@ -1063,7 +1274,16 @@ int main()
                     graphicsApplyRequested = false;
                 }
             }
+            float currentUpdateCpuMs = 0.0f;
+            if (collectDetailedMetrics)
+            {
+                const auto updateCpuEnd = std::chrono::steady_clock::now();
+                currentUpdateCpuMs = to_ms(updateCpuEnd - updateCpuStart);
+            }
 
+            std::chrono::steady_clock::time_point uiCpuStart{};
+            if (collectDetailedMetrics)
+                uiCpuStart = std::chrono::steady_clock::now();
             Editor::UI::NewFrame();
             viewportHovered = false;
 
@@ -1263,7 +1483,7 @@ int main()
                         {
                             for (size_t i = 0; i < levels.size(); ++i)
                             {
-                                ImGui::PushID(static_cast<int>(i));
+                                ImGui::PushID(static_cast<std::int32_t>(i));
                                 ImGui::Text("%s", levels[i].name.c_str());
                                 ImGui::SameLine();
                                 ImGui::TextDisabled("(%s)", levels[i].filePath.c_str());
@@ -1315,9 +1535,9 @@ int main()
                                 auto newLevel = std::make_unique<Level>(Level::create_new(lName));
 
                                 // Save to project's Levels/ directory
-                                fs::path relPath = fs::path("Levels") / (lName + ".noc_level");
+                                std::filesystem::path relPath = std::filesystem::path("Levels") / (lName + ".noc_level");
                                 std::string absPath = project->get_absolute_path(relPath);
-                                fs::create_directories(fs::path(absPath).parent_path());
+                                std::filesystem::create_directories(std::filesystem::path(absPath).parent_path());
 
                                 auto saveResult = newLevel->save_as(absPath);
                                 if (saveResult)
@@ -1361,7 +1581,7 @@ int main()
                         {
                             projectAssetsCache = scan_project_assets(project.get());
                             projectAssetsDirty = false;
-                            if (selectedProjectAsset >= static_cast<int>(projectAssetsCache.size()))
+                            if (selectedProjectAsset >= static_cast<std::int32_t>(projectAssetsCache.size()))
                                 selectedProjectAsset = -1;
                         }
 
@@ -1385,7 +1605,7 @@ int main()
                             ImGui::TableSetupColumn("Size (KiB)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
                             ImGui::TableHeadersRow();
 
-                            for (int i = 0; i < static_cast<int>(projectAssetsCache.size()); ++i)
+                            for (std::int32_t i = 0; i < static_cast<std::int32_t>(projectAssetsCache.size()); ++i)
                             {
                                 const auto& asset = projectAssetsCache[i];
                                 const std::string searchable = to_lower_copy(asset.category + " " + asset.relativePath);
@@ -1410,15 +1630,16 @@ int main()
                         }
 
                         const bool hasSelection =
-                            selectedProjectAsset >= 0 && selectedProjectAsset < static_cast<int>(projectAssetsCache.size());
+                            selectedProjectAsset >= 0 &&
+                            selectedProjectAsset < static_cast<std::int32_t>(projectAssetsCache.size());
                         if (!hasSelection)
                             ImGui::BeginDisabled();
                         if (ImGui::Button("Delete Selected Asset"))
                         {
                             const auto& asset = projectAssetsCache[selectedProjectAsset];
                             std::error_code ec;
-                            fs::path absPath = project->get_absolute_path(asset.relativePath);
-                            if (fs::remove(absPath, ec))
+                            std::filesystem::path absPath = project->get_absolute_path(asset.relativePath);
+                            if (std::filesystem::remove(absPath, ec))
                             {
                                 statusMessage = {fmt::format("Deleted '{}'", asset.relativePath), false, 3.5f};
                                 projectAssetsDirty = true;
@@ -1514,11 +1735,26 @@ int main()
                 {
                     if (ImGui::Begin("Renderer Stats", &showRendererStatsPanel, ImGuiWindowFlags_NoFocusOnAppearing))
                     {
-                        uint32_t rw = renderer.get_render_width();
-                        uint32_t rh = renderer.get_render_height();
+                        std::uint32_t rw = renderer.get_render_width();
+                        std::uint32_t rh = renderer.get_render_height();
 
-                        ImGui::Text("FPS: %.1f", fpsSmoothed);
-                        ImGui::Text("Frame Time: %.2f ms", deltaTime * 1000.0f);
+                        if (showDetailedMetrics)
+                        {
+                            ImGui::Text("FPS (Inst / Smooth / Rolling): %.1f / %.1f / %.1f", runtimeMetrics.fpsInstant,
+                                        runtimeMetrics.fpsSmoothed, runtimeMetrics.fpsRolling);
+                            ImGui::Text("Frame Time: %.2f ms (min %.2f / max %.2f)", runtimeMetrics.frameTimeMs,
+                                        runtimeMetrics.frameTimeMinMs, runtimeMetrics.frameTimeMaxMs);
+                            ImGui::Text("CPU (Last Frame) Update/UI/Submit: %.2f / %.2f / %.2f ms",
+                                        runtimeMetrics.cpuUpdateMs, runtimeMetrics.cpuUiBuildMs,
+                                        runtimeMetrics.cpuRenderSubmitMs);
+                            ImGui::Text("CPU Total: %.2f ms", runtimeMetrics.cpuFrameTotalMs);
+                        }
+                        else
+                        {
+                            ImGui::Text("FPS: %.1f", fpsSmoothed);
+                            ImGui::Text("Frame Time: %.2f ms", deltaTime * 1000.0f);
+                        }
+                        ImGui::Checkbox("Detailed Metrics", &showDetailedMetrics);
                         ImGui::Separator();
                         ImGui::Text("GPU: %s", gpuName.c_str());
                         ImGui::Text("Resolution: %u x %u", rw, rh);
@@ -1537,8 +1773,36 @@ int main()
                         ImGui::Text("Meshes Loaded: %u", vulkan.get_mesh_count());
                         ImGui::Text("Textures Loaded: %u", vulkan.get_texture_count());
                         ImGui::Text("Materials Loaded: %u", vulkan.get_material_count());
-                        ImGui::Text("Mesh VRAM (est): %.2f MiB", bytes_to_mib(vulkan.get_mesh_memory_bytes()));
-                        ImGui::Text("Texture VRAM (est): %.2f MiB", bytes_to_mib(vulkan.get_texture_memory_bytes()));
+                        if (showDetailedMetrics)
+                        {
+                            ImGui::Text("Tracked VRAM (Device Local): %.2f MiB",
+                                        bytes_to_mib(vulkan.get_tracked_device_local_memory_bytes()));
+                            ImGui::Text("Tracked Host-Visible: %.2f MiB",
+                                        bytes_to_mib(vulkan.get_tracked_host_visible_memory_bytes()));
+                            ImGui::Text("Tracked Total Alloc: %.2f MiB",
+                                        bytes_to_mib(vulkan.get_total_tracked_memory_bytes()));
+                            ImGui::Text("Mesh VRAM (alloc): %.2f MiB", bytes_to_mib(vulkan.get_mesh_memory_bytes()));
+                            ImGui::Text("Texture VRAM (alloc): %.2f MiB", bytes_to_mib(vulkan.get_texture_memory_bytes()));
+                            ImGui::Text("Scene Targets (alloc): %.2f MiB", bytes_to_mib(vulkan.get_scene_target_memory_bytes()));
+                            ImGui::Text("Instance Buffers (alloc): %.2f MiB", bytes_to_mib(vulkan.get_instance_memory_bytes()));
+                            ImGui::Text("Upload Staging (alloc): %.2f MiB",
+                                        bytes_to_mib(vulkan.get_upload_staging_memory_bytes()));
+                            const DeviceLocalMemoryBudget vramBudget = vulkan.get_device_local_memory_budget();
+                            if (vramBudget.supported)
+                            {
+                                ImGui::Text("Driver VRAM Usage/Budget: %.2f / %.2f MiB",
+                                            bytes_to_mib(vramBudget.usageBytes), bytes_to_mib(vramBudget.budgetBytes));
+                            }
+                            else
+                            {
+                                ImGui::TextDisabled("Driver VRAM usage/budget unavailable on this GPU/driver.");
+                            }
+                        }
+                        else
+                        {
+                            ImGui::Text("Mesh VRAM (est): %.2f MiB", bytes_to_mib(vulkan.get_mesh_memory_bytes()));
+                            ImGui::Text("Texture VRAM (est): %.2f MiB", bytes_to_mib(vulkan.get_texture_memory_bytes()));
+                        }
                         ImGui::Text("Script Environments: %zu", scriptEngine.get_environment_count());
                     }
                     ImGui::End();
@@ -1554,8 +1818,8 @@ int main()
                         const char* msaaLabel = msaa_sample_count_name(graphicsDraft.msaaSamples);
                         if (ImGui::BeginCombo("MSAA", msaaLabel))
                         {
-                            constexpr int msaaOptions[] = {1, 2, 4, 8};
-                            for (int opt : msaaOptions)
+                            constexpr std::array<std::int32_t, 4> msaaOptions = {1, 2, 4, 8};
+                            for (std::int32_t opt : msaaOptions)
                             {
                                 bool isSelected = (graphicsDraft.msaaSamples == opt);
                                 if (ImGui::Selectable(msaa_sample_count_name(opt), isSelected))
@@ -1579,9 +1843,9 @@ int main()
 
                         // Present mode
                         bool presentModeChanged = false;
-                        int selected = static_cast<int>(graphicsDraft.presentMode);
+                        std::int32_t selected = static_cast<std::int32_t>(graphicsDraft.presentMode);
                         ImGui::Text("Present Mode");
-                        if (ImGui::RadioButton("VSync", &selected, static_cast<int>(KHR_Settings::VSync)))
+                        if (ImGui::RadioButton("VSync", &selected, static_cast<std::int32_t>(KHR_Settings::VSync)))
                         {
                             graphicsDraft.presentMode = KHR_Settings::VSync;
                             graphicsDraft.dirty = true;
@@ -1589,14 +1853,14 @@ int main()
                         }
                         ImGui::SameLine();
                         if (ImGui::RadioButton("Triple Buffered", &selected,
-                                               static_cast<int>(KHR_Settings::Triple_Buffering)))
+                                               static_cast<std::int32_t>(KHR_Settings::Triple_Buffering)))
                         {
                             graphicsDraft.presentMode = KHR_Settings::Triple_Buffering;
                             graphicsDraft.dirty = true;
                             presentModeChanged = true;
                         }
                         ImGui::SameLine();
-                        if (ImGui::RadioButton("Immediate", &selected, static_cast<int>(KHR_Settings::Immediate)))
+                        if (ImGui::RadioButton("Immediate", &selected, static_cast<std::int32_t>(KHR_Settings::Immediate)))
                         {
                             graphicsDraft.presentMode = KHR_Settings::Immediate;
                             graphicsDraft.dirty = true;
@@ -1655,9 +1919,10 @@ int main()
                             // If we have a project, save under the project's Levels/ directory
                             if (project)
                             {
-                                fs::path relPath = fs::path("Levels") / (level->name() + ".noc_level");
+                                std::filesystem::path relPath =
+                                    std::filesystem::path("Levels") / (level->name() + ".noc_level");
                                 std::string absPath = project->get_absolute_path(relPath);
-                                fs::create_directories(fs::path(absPath).parent_path());
+                                std::filesystem::create_directories(std::filesystem::path(absPath).parent_path());
                                 auto result = level->save_as(absPath);
                                 if (result)
                                 {
@@ -1757,7 +2022,7 @@ int main()
                         {
                             projectAssetsCache = scan_project_assets(project.get());
                             projectAssetsDirty = false;
-                            if (selectedProjectAsset >= static_cast<int>(projectAssetsCache.size()))
+                            if (selectedProjectAsset >= static_cast<std::int32_t>(projectAssetsCache.size()))
                                 selectedProjectAsset = -1;
                         }
 
@@ -1786,7 +2051,7 @@ int main()
                             ImGui::TableSetupColumn("Size (KiB)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
                             ImGui::TableHeadersRow();
 
-                            for (int i = 0; i < static_cast<int>(projectAssetsCache.size()); ++i)
+                            for (std::int32_t i = 0; i < static_cast<std::int32_t>(projectAssetsCache.size()); ++i)
                             {
                                 const auto& asset = projectAssetsCache[i];
                                 const std::string searchable = to_lower_copy(asset.category + " " + asset.relativePath);
@@ -1811,15 +2076,16 @@ int main()
                         }
 
                         const bool hasSelection =
-                            selectedProjectAsset >= 0 && selectedProjectAsset < static_cast<int>(projectAssetsCache.size());
+                            selectedProjectAsset >= 0 &&
+                            selectedProjectAsset < static_cast<std::int32_t>(projectAssetsCache.size());
                         if (!hasSelection)
                             ImGui::BeginDisabled();
                         if (ImGui::Button("Delete Selected Asset"))
                         {
                             const auto& asset = projectAssetsCache[selectedProjectAsset];
                             std::error_code ec;
-                            fs::path absPath = project->get_absolute_path(asset.relativePath);
-                            if (fs::remove(absPath, ec))
+                            std::filesystem::path absPath = project->get_absolute_path(asset.relativePath);
+                            if (std::filesystem::remove(absPath, ec))
                             {
                                 statusMessage = {fmt::format("Deleted '{}'", asset.relativePath), false, 3.5f};
                                 projectAssetsDirty = true;
@@ -1914,7 +2180,7 @@ int main()
                             ImGui::Separator();
 
                             static std::vector<std::string> availableScripts;
-                            static int selectedScriptIdx = 0;
+                            static std::int32_t selectedScriptIdx = 0;
 
                             // Auto-scan on first use
                             if (availableScripts.empty())
@@ -1922,12 +2188,12 @@ int main()
 
                             if (!availableScripts.empty())
                             {
-                                if (selectedScriptIdx >= static_cast<int>(availableScripts.size()))
+                                if (selectedScriptIdx >= static_cast<std::int32_t>(availableScripts.size()))
                                     selectedScriptIdx = 0;
 
                                 if (ImGui::BeginCombo("Script", availableScripts[selectedScriptIdx].c_str()))
                                 {
-                                    for (int i = 0; i < static_cast<int>(availableScripts.size()); ++i)
+                                    for (std::int32_t i = 0; i < static_cast<std::int32_t>(availableScripts.size()); ++i)
                                     {
                                         bool isSelected = (selectedScriptIdx == i);
                                         if (ImGui::Selectable(availableScripts[i].c_str(), isSelected))
@@ -1960,7 +2226,11 @@ int main()
 
                         ImGui::Separator();
                         auto& tc = world.registry().get<TransformComponent>(selectedEntity);
-                        draw_transform_inspector(tc);
+                        if (draw_transform_inspector(tc))
+                        {
+                            world.mark_transforms_dirty();
+                            level->mark_dirty();
+                        }
 
                         ImGui::Separator();
 
@@ -2001,7 +2271,25 @@ int main()
             }
 
             ImGui::Render();
-            return renderer.draw_frame();
+            if (collectDetailedMetrics)
+            {
+                const auto uiCpuEnd = std::chrono::steady_clock::now();
+                runtimeMetrics.cpuUiBuildMs = to_ms(uiCpuEnd - uiCpuStart);
+            }
+
+            std::chrono::steady_clock::time_point renderSubmitStart{};
+            if (collectDetailedMetrics)
+                renderSubmitStart = std::chrono::steady_clock::now();
+            auto drawResult = renderer.draw_frame();
+            if (collectDetailedMetrics)
+            {
+                const auto renderSubmitEnd = std::chrono::steady_clock::now();
+                runtimeMetrics.cpuUpdateMs = currentUpdateCpuMs;
+                runtimeMetrics.cpuRenderSubmitMs = to_ms(renderSubmitEnd - renderSubmitStart);
+                runtimeMetrics.cpuFrameTotalMs =
+                    runtimeMetrics.cpuUpdateMs + runtimeMetrics.cpuUiBuildMs + runtimeMetrics.cpuRenderSubmitMs;
+            }
+            return drawResult;
         }));
         code != 0)
     {

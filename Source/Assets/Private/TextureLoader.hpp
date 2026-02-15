@@ -14,7 +14,7 @@
 /// Usage with entt::resource_cache:
 ///   entt::resource_cache<TextureData, TextureLoader> cache;
 ///   cache.load(id, "path/to/texture.png");
-struct TextureLoader
+struct NOC_EXPORT TextureLoader
 {
     using result_type = std::shared_ptr<TextureData>;
 

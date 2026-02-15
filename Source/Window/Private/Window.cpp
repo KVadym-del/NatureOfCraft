@@ -55,7 +55,7 @@ void Window::cleanup() noexcept
     glfwTerminate();
 }
 
-void Window::glfw_framebuffer_size_callback(GLFWwindow* window, int width, int height)
+void Window::glfw_framebuffer_size_callback(GLFWwindow* window, std::int32_t width, std::int32_t height)
 {
     auto* self = static_cast<Window*>(glfwGetWindowUserPointer(window));
     if (self && self->m_framebufferSizeCallback)
@@ -69,7 +69,8 @@ void Window::glfw_cursor_pos_callback(GLFWwindow* window, double xpos, double yp
         self->m_cursorPosCallback(xpos, ypos);
 }
 
-void Window::glfw_mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
+void Window::glfw_mouse_button_callback(GLFWwindow* window, std::int32_t button, std::int32_t action,
+                                        std::int32_t mods)
 {
     auto* self = static_cast<Window*>(glfwGetWindowUserPointer(window));
     if (self && self->m_mouseButtonCallback)

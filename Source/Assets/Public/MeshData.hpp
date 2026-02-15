@@ -3,6 +3,7 @@
 #include "../../Rendering/Public/Mesh.hpp"
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -15,11 +16,13 @@ NOC_SUPPRESS_DLL_WARNINGS
 /// The renderer uploads this to GPU buffers separately.
 struct NOC_EXPORT MeshData
 {
+    /// Human-readable mesh identifier.
     std::string name{};
-    std::string sourcePath{};
+    /// Source asset path that produced this mesh.
+    std::filesystem::path sourcePath{};
 
     std::vector<Vertex> vertices{};
-    std::vector<uint32_t> indices{};
+    std::vector<std::uint32_t> indices{};
 
     DirectX::XMFLOAT3 boundsMin{};
     DirectX::XMFLOAT3 boundsMax{};

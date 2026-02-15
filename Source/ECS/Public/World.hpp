@@ -46,6 +46,16 @@ class NOC_EXPORT World
     /// Builds a flat list of Renderables from all entities with MeshComponent + WorldMatrixCache.
     const std::vector<Renderable>& collect_renderables();
 
+    /// Marks transform/hierarchy-dependent data dirty.
+    /// Call this after mutating transforms outside World APIs.
+    void mark_transforms_dirty() noexcept;
+
+    /// Marks renderable cache dirty (mesh/material assignment changed).
+    void mark_renderables_dirty() noexcept;
+
+    /// Returns true when renderables must be rebuilt before pushing to the renderer.
+    bool has_renderables_updates_pending() const noexcept;
+
     /// Returns the first entity whose CameraComponent has isActive == true, or entt::null.
     entt::entity get_active_camera();
 
@@ -67,6 +77,8 @@ class NOC_EXPORT World
     entt::registry m_registry;
     std::vector<entt::entity> m_rootEntitiesCache;
     bool m_rootEntitiesDirty{true};
+    bool m_worldMatricesDirty{true};
+    bool m_renderablesDirty{true};
     std::vector<Renderable> m_renderablesCache;
 };
 

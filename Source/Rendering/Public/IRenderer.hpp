@@ -71,10 +71,10 @@ class NOC_EXPORT IRenderer
     virtual bool get_vsync() const noexcept = 0;
 
     /// Set MSAA sample count (1, 2, 4, 8). Clamped to device max.
-    virtual void set_msaa_samples(int samples) noexcept = 0;
+    virtual void set_msaa_samples(std::int32_t samples) noexcept = 0;
 
     /// Get current MSAA sample count.
-    virtual int get_msaa_samples() const noexcept = 0;
+    virtual std::int32_t get_msaa_samples() const noexcept = 0;
 
     /// Set render resolution scale (0.25 to 2.0). 1.0 = native resolution.
     virtual void set_render_scale(float scale) noexcept = 0;

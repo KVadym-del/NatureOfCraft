@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -166,7 +167,7 @@ Result<> Vulkan::draw_frame() noexcept
         vkQueueSubmit(m_vulkanDevice.get_graphics_queue(), 1, &submitInfo, m_inFlightFences[m_currentFrame]);
     if (submitResult != VK_SUCCESS)
     {
-        fmt::print("Warning: vkQueueSubmit failed with VkResult={}\n", static_cast<int>(submitResult));
+        fmt::print("Warning: vkQueueSubmit failed with VkResult={}\n", static_cast<std::int32_t>(submitResult));
         if (submitResult != VK_ERROR_DEVICE_LOST)
         {
             if (auto recover = recreate_swap_chain(); recover)
@@ -316,6 +317,11 @@ void Vulkan::cleanup() noexcept
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
     {
+        if (m_instanceBufferMappings[i] != nullptr && m_instanceBufferMemories[i] != VK_NULL_HANDLE)
+        {
+            vkUnmapMemory(device, m_instanceBufferMemories[i]);
+            m_instanceBufferMappings[i] = nullptr;
+        }
         if (m_instanceBuffers[i] != VK_NULL_HANDLE)
         {
             vkDestroyBuffer(device, m_instanceBuffers[i], nullptr);
@@ -326,8 +332,12 @@ void Vulkan::cleanup() noexcept
             vkFreeMemory(device, m_instanceBufferMemories[i], nullptr);
             m_instanceBufferMemories[i] = VK_NULL_HANDLE;
         }
+        m_instanceBufferAllocatedBytes[i] = 0;
     }
     m_instanceBufferCapacity = 0;
+    m_instanceBufferMemoryBytes = 0;
+
+    cleanup_upload_staging_buffer();
 
     // Destroy sync objects
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
@@ -361,6 +371,7 @@ void Vulkan::cleanup() noexcept
 
     // Sub-components clean up
     m_pipeline.cleanup();
+    m_pipeline.release_cache();
     m_swapchain.cleanup();
     m_vulkanDevice.cleanup();
 }
@@ -386,6 +397,76 @@ Result<> Vulkan::create_command_buffers()
     return {};
 }
 
+Result<> Vulkan::ensure_upload_staging_capacity(VkDeviceSize requiredSize)
+{
+    if (requiredSize <= m_uploadStagingCapacity && m_uploadStagingBuffer != VK_NULL_HANDLE && m_uploadStagingMapped)
+        return {};
+
+    VkDevice device = m_vulkanDevice.get_device();
+
+    // Grow geometrically to avoid frequent reallocations.
+    VkDeviceSize newCapacity = std::max<VkDeviceSize>(requiredSize, 1024 * 1024);
+    if (m_uploadStagingCapacity > 0)
+    {
+        while (newCapacity < requiredSize)
+            newCapacity *= 2;
+        newCapacity = std::max(newCapacity, m_uploadStagingCapacity * 2);
+    }
+
+    cleanup_upload_staging_buffer();
+
+    VkDeviceSize allocatedBytes = 0;
+    auto createResult = m_vulkanDevice.create_buffer(
+        newCapacity, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, m_uploadStagingBuffer,
+        m_uploadStagingBufferMemory, &allocatedBytes);
+    if (!createResult)
+        return make_error(createResult.error());
+
+    if (vkMapMemory(device, m_uploadStagingBufferMemory, 0, newCapacity, 0, &m_uploadStagingMapped) != VK_SUCCESS)
+    {
+        cleanup_upload_staging_buffer();
+        return make_error("Failed to map upload staging buffer memory", ErrorCode::VulkanMemoryAllocationFailed);
+    }
+
+    m_uploadStagingCapacity = newCapacity;
+    m_uploadStagingMemoryBytes = static_cast<uint64_t>(allocatedBytes);
+    return {};
+}
+
+void Vulkan::cleanup_upload_staging_buffer() noexcept
+{
+    VkDevice device = m_vulkanDevice.get_device();
+    if (!device)
+    {
+        m_uploadStagingBuffer = VK_NULL_HANDLE;
+        m_uploadStagingBufferMemory = VK_NULL_HANDLE;
+        m_uploadStagingMapped = nullptr;
+        m_uploadStagingCapacity = 0;
+        m_uploadStagingMemoryBytes = 0;
+        return;
+    }
+
+    if (m_uploadStagingMapped != nullptr && m_uploadStagingBufferMemory != VK_NULL_HANDLE)
+    {
+        vkUnmapMemory(device, m_uploadStagingBufferMemory);
+        m_uploadStagingMapped = nullptr;
+    }
+    if (m_uploadStagingBuffer != VK_NULL_HANDLE)
+    {
+        vkDestroyBuffer(device, m_uploadStagingBuffer, nullptr);
+        m_uploadStagingBuffer = VK_NULL_HANDLE;
+    }
+    if (m_uploadStagingBufferMemory != VK_NULL_HANDLE)
+    {
+        vkFreeMemory(device, m_uploadStagingBufferMemory, nullptr);
+        m_uploadStagingBufferMemory = VK_NULL_HANDLE;
+    }
+
+    m_uploadStagingCapacity = 0;
+    m_uploadStagingMemoryBytes = 0;
+}
+
 Result<> Vulkan::ensure_instance_buffer_capacity(std::size_t requiredInstances)
 {
     if (requiredInstances <= m_instanceBufferCapacity)
@@ -398,17 +479,22 @@ Result<> Vulkan::ensure_instance_buffer_capacity(std::size_t requiredInstances)
     VkDeviceSize bufferSize = static_cast<VkDeviceSize>(sizeof(InstanceData) * newCapacity);
     std::array<VkBuffer, MAX_FRAMES_IN_FLIGHT> newBuffers{};
     std::array<VkDeviceMemory, MAX_FRAMES_IN_FLIGHT> newMemories{};
+    std::array<void*, MAX_FRAMES_IN_FLIGHT> newMappings{};
+    std::array<VkDeviceSize, MAX_FRAMES_IN_FLIGHT> newAllocatedBytes{};
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
     {
         auto result = m_vulkanDevice.create_buffer(
             bufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, newBuffers[i], newMemories[i]);
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, newBuffers[i], newMemories[i],
+            &newAllocatedBytes[i]);
         if (!result)
         {
             VkDevice device = m_vulkanDevice.get_device();
             for (size_t j = 0; j <= i; ++j)
             {
+                if (newMappings[j] != nullptr && newMemories[j] != VK_NULL_HANDLE)
+                    vkUnmapMemory(device, newMemories[j]);
                 if (newBuffers[j] != VK_NULL_HANDLE)
                     vkDestroyBuffer(device, newBuffers[j], nullptr);
                 if (newMemories[j] != VK_NULL_HANDLE)
@@ -416,20 +502,42 @@ Result<> Vulkan::ensure_instance_buffer_capacity(std::size_t requiredInstances)
             }
             return make_error(result.error());
         }
+
+        if (vkMapMemory(m_vulkanDevice.get_device(), newMemories[i], 0, bufferSize, 0, &newMappings[i]) != VK_SUCCESS)
+        {
+            VkDevice device = m_vulkanDevice.get_device();
+            for (size_t j = 0; j <= i; ++j)
+            {
+                if (newMappings[j] != nullptr && newMemories[j] != VK_NULL_HANDLE)
+                    vkUnmapMemory(device, newMemories[j]);
+                if (newBuffers[j] != VK_NULL_HANDLE)
+                    vkDestroyBuffer(device, newBuffers[j], nullptr);
+                if (newMemories[j] != VK_NULL_HANDLE)
+                    vkFreeMemory(device, newMemories[j], nullptr);
+            }
+            return make_error("Failed to map instance buffer memory", ErrorCode::VulkanMemoryAllocationFailed);
+        }
     }
 
     VkDevice device = m_vulkanDevice.get_device();
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
     {
+        if (m_instanceBufferMappings[i] != nullptr && m_instanceBufferMemories[i] != VK_NULL_HANDLE)
+            vkUnmapMemory(device, m_instanceBufferMemories[i]);
         if (m_instanceBuffers[i] != VK_NULL_HANDLE)
             vkDestroyBuffer(device, m_instanceBuffers[i], nullptr);
         if (m_instanceBufferMemories[i] != VK_NULL_HANDLE)
             vkFreeMemory(device, m_instanceBufferMemories[i], nullptr);
         m_instanceBuffers[i] = newBuffers[i];
         m_instanceBufferMemories[i] = newMemories[i];
+        m_instanceBufferMappings[i] = newMappings[i];
+        m_instanceBufferAllocatedBytes[i] = newAllocatedBytes[i];
     }
 
     m_instanceBufferCapacity = newCapacity;
+    m_instanceBufferMemoryBytes = 0;
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+        m_instanceBufferMemoryBytes += static_cast<uint64_t>(m_instanceBufferAllocatedBytes[i]);
     return {};
 }
 
@@ -552,53 +660,6 @@ Result<> Vulkan::record_command_buffer(VkCommandBuffer commandBuffer, uint32_t i
                 InstanceBatch{renderable.meshIndex, materialIndex, firstInstance, 1});
         }
 
-        // Safety fallback: if culling rejected everything unexpectedly, render all.
-        if (m_instanceDataScratch.empty() && !m_renderables.empty())
-        {
-            culledRenderables = 0;
-            m_instanceDataScratch.clear();
-            m_instanceBatchesScratch.clear();
-            m_instanceDataScratch.reserve(m_renderables.size());
-            m_instanceBatchesScratch.reserve(m_renderables.size());
-
-            for (const auto& renderable : m_renderables)
-            {
-                if (renderable.meshIndex >= m_meshes.size())
-                    continue;
-
-                const auto& mesh = m_meshes[renderable.meshIndex];
-                if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE)
-                    continue;
-
-                XMMATRIX world = XMLoadFloat4x4(&renderable.worldMatrix);
-                XMMATRIX mvp = XMMatrixMultiply(world, viewProj);
-
-                InstanceData instanceData{};
-                XMStoreFloat4x4(&instanceData.mvp, mvp);
-                instanceData.model = renderable.worldMatrix;
-
-                uint32_t materialIndex = renderable.materialIndex;
-                if (materialIndex >= m_materials.size())
-                    materialIndex = m_defaultMaterialIndex;
-
-                const uint32_t firstInstance = static_cast<uint32_t>(m_instanceDataScratch.size());
-                m_instanceDataScratch.push_back(instanceData);
-
-                if (!m_instanceBatchesScratch.empty())
-                {
-                    auto& lastBatch = m_instanceBatchesScratch.back();
-                    if (lastBatch.meshIndex == renderable.meshIndex && lastBatch.materialIndex == materialIndex)
-                    {
-                        ++lastBatch.instanceCount;
-                        continue;
-                    }
-                }
-
-                m_instanceBatchesScratch.push_back(
-                    InstanceBatch{renderable.meshIndex, materialIndex, firstInstance, 1});
-            }
-        }
-
         m_lastVisibleRenderableCount = static_cast<uint32_t>(m_instanceDataScratch.size());
         m_lastCulledRenderableCount = culledRenderables;
         m_lastInstancedBatchCount = static_cast<uint32_t>(m_instanceBatchesScratch.size());
@@ -609,14 +670,13 @@ Result<> Vulkan::record_command_buffer(VkCommandBuffer commandBuffer, uint32_t i
             if (auto result = ensure_instance_buffer_capacity(m_instanceDataScratch.size()); !result)
                 return result;
 
-            void* mapped = nullptr;
             VkDeviceSize dataSize = static_cast<VkDeviceSize>(sizeof(InstanceData) * m_instanceDataScratch.size());
-            if (vkMapMemory(device, m_instanceBufferMemories[m_currentFrame], 0, dataSize, 0, &mapped) != VK_SUCCESS)
+            void* mapped = m_instanceBufferMappings[m_currentFrame];
+            if (mapped == nullptr)
             {
-                return make_error("Failed to map instance buffer memory", ErrorCode::VulkanMemoryAllocationFailed);
+                return make_error("Instance buffer is not mapped", ErrorCode::VulkanMemoryAllocationFailed);
             }
             std::memcpy(mapped, m_instanceDataScratch.data(), static_cast<size_t>(dataSize));
-            vkUnmapMemory(device, m_instanceBufferMemories[m_currentFrame]);
         }
 
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
@@ -824,7 +884,8 @@ Result<> Vulkan::recreate_swap_chain()
     GLFWwindow* window = m_vulkanDevice.get_window();
     VkDevice device = m_vulkanDevice.get_device();
 
-    int width = 0, height = 0;
+    std::int32_t width = 0;
+    std::int32_t height = 0;
     glfwGetFramebufferSize(window, &width, &height);
     while (width == 0 || height == 0)
     {
@@ -893,7 +954,7 @@ Result<uint32_t> Vulkan::upload_mesh(const MeshData& meshData)
     std::string meshKey;
     if (!meshData.sourcePath.empty())
     {
-        meshKey = meshData.sourcePath;
+        meshKey = meshData.sourcePath.generic_string();
         meshKey.push_back('|');
         meshKey += meshData.name;
         if (const auto it = m_meshLookup.find(meshKey); it != m_meshLookup.end())
@@ -903,88 +964,87 @@ Result<uint32_t> Vulkan::upload_mesh(const MeshData& meshData)
     VkDevice device = m_vulkanDevice.get_device();
     Mesh mesh{};
     mesh.indexCount = static_cast<uint32_t>(meshData.indices.size());
+    auto cleanup_mesh_gpu_buffers = [&]() {
+        if (mesh.indexBuffer != VK_NULL_HANDLE)
+        {
+            vkDestroyBuffer(device, mesh.indexBuffer, nullptr);
+            mesh.indexBuffer = VK_NULL_HANDLE;
+        }
+        if (mesh.indexBufferMemory != VK_NULL_HANDLE)
+        {
+            vkFreeMemory(device, mesh.indexBufferMemory, nullptr);
+            mesh.indexBufferMemory = VK_NULL_HANDLE;
+        }
+        if (mesh.vertexBuffer != VK_NULL_HANDLE)
+        {
+            vkDestroyBuffer(device, mesh.vertexBuffer, nullptr);
+            mesh.vertexBuffer = VK_NULL_HANDLE;
+        }
+        if (mesh.vertexBufferMemory != VK_NULL_HANDLE)
+        {
+            vkFreeMemory(device, mesh.vertexBufferMemory, nullptr);
+            mesh.vertexBufferMemory = VK_NULL_HANDLE;
+        }
+    };
 
-    // --- Vertex buffer ---
-    VkDeviceSize bufferSize = sizeof(meshData.vertices[0]) * meshData.vertices.size();
-    mesh.vertexBufferBytes = bufferSize;
-    VkBuffer stagingBuffer{};
-    VkDeviceMemory stagingBufferMemory{};
+    // --- Vertex/index buffers ---
+    const VkDeviceSize vertexBufferSize = sizeof(meshData.vertices[0]) * meshData.vertices.size();
+    const VkDeviceSize indexBufferSize = sizeof(meshData.indices[0]) * meshData.indices.size();
+    const VkDeviceSize indexSrcOffset = (vertexBufferSize + 3) & ~static_cast<VkDeviceSize>(3);
+    const VkDeviceSize totalStagingSize = indexSrcOffset + indexBufferSize;
+    mesh.vertexBufferBytes = vertexBufferSize;
+    mesh.indexBufferBytes = indexBufferSize;
+    VkDeviceSize vertexAllocationBytes = 0;
+    VkDeviceSize indexAllocationBytes = 0;
 
-    if (auto res =
-            m_vulkanDevice.create_buffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                         stagingBuffer, stagingBufferMemory);
-        !res)
+    if (auto res = ensure_upload_staging_capacity(totalStagingSize); !res)
         return make_error(res.error());
-
-    void* data{};
-    if (vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, &data) != VK_SUCCESS)
-    {
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingBufferMemory, nullptr);
-        return make_error("Failed to map vertex staging buffer memory", ErrorCode::VulkanMemoryAllocationFailed);
-    }
-    memcpy(data, meshData.vertices.data(), static_cast<size_t>(bufferSize));
-    vkUnmapMemory(device, stagingBufferMemory);
+    std::memcpy(m_uploadStagingMapped, meshData.vertices.data(), static_cast<size_t>(vertexBufferSize));
+    std::memcpy(static_cast<std::byte*>(m_uploadStagingMapped) + indexSrcOffset, meshData.indices.data(),
+                static_cast<size_t>(indexBufferSize));
 
     if (auto res = m_vulkanDevice.create_buffer(
-            bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mesh.vertexBuffer, mesh.vertexBufferMemory);
+            vertexBufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mesh.vertexBuffer, mesh.vertexBufferMemory, &vertexAllocationBytes);
         !res)
     {
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingBufferMemory, nullptr);
         return make_error(res.error());
     }
-
-    if (auto res = m_vulkanDevice.copy_buffer(stagingBuffer, mesh.vertexBuffer, bufferSize); !res)
-    {
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingBufferMemory, nullptr);
-        return make_error(res.error());
-    }
-
-    vkDestroyBuffer(device, stagingBuffer, nullptr);
-    vkFreeMemory(device, stagingBufferMemory, nullptr);
-
-    // --- Index buffer ---
-    VkDeviceSize indexBufferSize = sizeof(meshData.indices[0]) * meshData.indices.size();
-    mesh.indexBufferBytes = indexBufferSize;
-    if (auto res =
-            m_vulkanDevice.create_buffer(indexBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                         stagingBuffer, stagingBufferMemory);
-        !res)
-        return make_error(res.error());
-
-    if (vkMapMemory(device, stagingBufferMemory, 0, indexBufferSize, 0, &data) != VK_SUCCESS)
-    {
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingBufferMemory, nullptr);
-        return make_error("Failed to map index staging buffer memory", ErrorCode::VulkanMemoryAllocationFailed);
-    }
-    memcpy(data, meshData.indices.data(), static_cast<size_t>(indexBufferSize));
-    vkUnmapMemory(device, stagingBufferMemory);
 
     if (auto res = m_vulkanDevice.create_buffer(
             indexBufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mesh.indexBuffer, mesh.indexBufferMemory);
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mesh.indexBuffer, mesh.indexBufferMemory, &indexAllocationBytes);
         !res)
     {
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingBufferMemory, nullptr);
+        cleanup_mesh_gpu_buffers();
         return make_error(res.error());
     }
 
-    if (auto res = m_vulkanDevice.copy_buffer(stagingBuffer, mesh.indexBuffer, indexBufferSize); !res)
+    auto commandBufferResult = m_vulkanDevice.begin_single_time_commands();
+    if (!commandBufferResult)
     {
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingBufferMemory, nullptr);
-        return make_error(res.error());
+        cleanup_mesh_gpu_buffers();
+        return make_error("Failed to begin upload command buffer", ErrorCode::VulkanCopyBufferFailed);
     }
+    VkCommandBuffer commandBuffer = commandBufferResult.value();
 
-    vkDestroyBuffer(device, stagingBuffer, nullptr);
-    vkFreeMemory(device, stagingBufferMemory, nullptr);
+    VkBufferCopy vertexCopy{};
+    vertexCopy.srcOffset = 0;
+    vertexCopy.dstOffset = 0;
+    vertexCopy.size = vertexBufferSize;
+    vkCmdCopyBuffer(commandBuffer, m_uploadStagingBuffer, mesh.vertexBuffer, 1, &vertexCopy);
+
+    VkBufferCopy indexCopy{};
+    indexCopy.srcOffset = indexSrcOffset;
+    indexCopy.dstOffset = 0;
+    indexCopy.size = indexBufferSize;
+    vkCmdCopyBuffer(commandBuffer, m_uploadStagingBuffer, mesh.indexBuffer, 1, &indexCopy);
+
+    if (auto endResult = m_vulkanDevice.end_single_time_commands(commandBuffer); !endResult)
+    {
+        cleanup_mesh_gpu_buffers();
+        return make_error("Failed to submit mesh upload command buffer", ErrorCode::VulkanCopyBufferFailed);
+    }
 
     mesh.boundsCenter = {
         (meshData.boundsMin.x + meshData.boundsMax.x) * 0.5f,
@@ -995,10 +1055,13 @@ Result<uint32_t> Vulkan::upload_mesh(const MeshData& meshData)
     const float halfY = (meshData.boundsMax.y - meshData.boundsMin.y) * 0.5f;
     const float halfZ = (meshData.boundsMax.z - meshData.boundsMin.z) * 0.5f;
     mesh.boundsRadius = std::sqrt(halfX * halfX + halfY * halfY + halfZ * halfZ);
+    mesh.vertexBufferAllocationBytes = vertexAllocationBytes;
+    mesh.indexBufferAllocationBytes = indexAllocationBytes;
 
     uint32_t meshIndex = static_cast<uint32_t>(m_meshes.size());
     m_meshes.push_back(mesh);
-    m_meshMemoryBytes += static_cast<uint64_t>(mesh.vertexBufferBytes + mesh.indexBufferBytes);
+    m_meshMemoryBytes +=
+        static_cast<uint64_t>(mesh.vertexBufferAllocationBytes + mesh.indexBufferAllocationBytes);
     if (!meshKey.empty())
         m_meshLookup.emplace(std::move(meshKey), meshIndex);
     return meshIndex;
@@ -1072,88 +1135,89 @@ Result<uint32_t> Vulkan::upload_texture(const TextureData& textureData)
 
     if (!textureData.sourcePath.empty())
     {
-        if (const auto it = m_textureLookup.find(textureData.sourcePath); it != m_textureLookup.end())
+        const std::string textureKey = textureData.sourcePath.generic_string();
+        if (const auto it = m_textureLookup.find(textureKey); it != m_textureLookup.end())
             return it->second;
     }
 
     VkDevice device = m_vulkanDevice.get_device();
     VkDeviceSize imageSize = static_cast<VkDeviceSize>(textureData.width) * textureData.height * 4;
 
-    // Create staging buffer
-    VkBuffer stagingBuffer{};
-    VkDeviceMemory stagingBufferMemory{};
-
-    if (auto res =
-            m_vulkanDevice.create_buffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                         stagingBuffer, stagingBufferMemory);
-        !res)
+    if (auto res = ensure_upload_staging_capacity(imageSize); !res)
         return make_error(res.error());
 
     // Copy pixel data to staging buffer
-    void* data{};
-    if (vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data) != VK_SUCCESS)
-    {
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingBufferMemory, nullptr);
-        return make_error("Failed to map texture staging buffer memory", ErrorCode::VulkanMemoryAllocationFailed);
-    }
-    memcpy(data, textureData.pixels.data(), static_cast<size_t>(imageSize));
-    vkUnmapMemory(device, stagingBufferMemory);
+    std::memcpy(m_uploadStagingMapped, textureData.pixels.data(), static_cast<size_t>(imageSize));
 
     // Create the VkImage
     GpuTexture texture{};
     VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
+    VkDeviceSize textureAllocationBytes = 0;
 
     if (auto res = m_vulkanDevice.create_image(textureData.width, textureData.height, format, VK_IMAGE_TILING_OPTIMAL,
                                                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, texture.image, texture.memory);
+                                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, texture.image, texture.memory,
+                                               VK_SAMPLE_COUNT_1_BIT, &textureAllocationBytes);
         !res)
     {
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingBufferMemory, nullptr);
         return make_error(res.error());
     }
 
-    // Transition: UNDEFINED -> TRANSFER_DST_OPTIMAL
-    if (auto res = m_vulkanDevice.transition_image_layout(texture.image, format, VK_IMAGE_LAYOUT_UNDEFINED,
-                                                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        !res)
+    auto commandBufferResult = m_vulkanDevice.begin_single_time_commands();
+    if (!commandBufferResult)
     {
         vkDestroyImage(device, texture.image, nullptr);
         vkFreeMemory(device, texture.memory, nullptr);
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingBufferMemory, nullptr);
-        return make_error(res.error());
+        return make_error("Failed to begin texture upload command buffer", ErrorCode::VulkanTextureUploadFailed);
     }
+    VkCommandBuffer commandBuffer = commandBufferResult.value();
 
-    // Copy staging buffer to image
-    if (auto res =
-            m_vulkanDevice.copy_buffer_to_image(stagingBuffer, texture.image, textureData.width, textureData.height);
-        !res)
+    VkImageMemoryBarrier toTransferBarrier{};
+    toTransferBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    toTransferBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    toTransferBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toTransferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toTransferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toTransferBarrier.image = texture.image;
+    toTransferBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    toTransferBarrier.subresourceRange.baseMipLevel = 0;
+    toTransferBarrier.subresourceRange.levelCount = 1;
+    toTransferBarrier.subresourceRange.baseArrayLayer = 0;
+    toTransferBarrier.subresourceRange.layerCount = 1;
+    toTransferBarrier.srcAccessMask = 0;
+    toTransferBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                         nullptr, 0, nullptr, 1, &toTransferBarrier);
+
+    VkBufferImageCopy copyRegion{};
+    copyRegion.bufferOffset = 0;
+    copyRegion.bufferRowLength = 0;
+    copyRegion.bufferImageHeight = 0;
+    copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copyRegion.imageSubresource.mipLevel = 0;
+    copyRegion.imageSubresource.baseArrayLayer = 0;
+    copyRegion.imageSubresource.layerCount = 1;
+    copyRegion.imageOffset = {0, 0, 0};
+    copyRegion.imageExtent = {textureData.width, textureData.height, 1};
+    vkCmdCopyBufferToImage(commandBuffer, m_uploadStagingBuffer, texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                           &copyRegion);
+
+    VkImageMemoryBarrier toShaderReadBarrier = toTransferBarrier;
+    toShaderReadBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toShaderReadBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    toShaderReadBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toShaderReadBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
+                         nullptr, 0, nullptr, 1, &toShaderReadBarrier);
+
+    if (auto endResult = m_vulkanDevice.end_single_time_commands(commandBuffer); !endResult)
     {
         vkDestroyImage(device, texture.image, nullptr);
         vkFreeMemory(device, texture.memory, nullptr);
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingBufferMemory, nullptr);
-        return make_error(res.error());
+        return make_error("Failed to submit texture upload command buffer", ErrorCode::VulkanTextureUploadFailed);
     }
-
-    // Transition: TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
-    if (auto res = m_vulkanDevice.transition_image_layout(texture.image, format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        !res)
-    {
-        vkDestroyImage(device, texture.image, nullptr);
-        vkFreeMemory(device, texture.memory, nullptr);
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingBufferMemory, nullptr);
-        return make_error(res.error());
-    }
-
-    // Staging buffer no longer needed
-    vkDestroyBuffer(device, stagingBuffer, nullptr);
-    vkFreeMemory(device, stagingBufferMemory, nullptr);
 
     // Create image view
     auto viewResult = m_vulkanDevice.create_image_view(texture.image, format, VK_IMAGE_ASPECT_COLOR_BIT);
@@ -1166,12 +1230,13 @@ Result<uint32_t> Vulkan::upload_texture(const TextureData& textureData)
     texture.imageView = viewResult.value();
     texture.width = textureData.width;
     texture.height = textureData.height;
+    texture.allocationBytes = textureAllocationBytes;
 
     uint32_t textureIndex = static_cast<uint32_t>(m_textures.size());
     m_textures.push_back(texture);
-    m_textureMemoryBytes += static_cast<uint64_t>(imageSize);
+    m_textureMemoryBytes += static_cast<uint64_t>(texture.allocationBytes);
     if (!textureData.sourcePath.empty())
-        m_textureLookup.emplace(textureData.sourcePath, textureIndex);
+        m_textureLookup.emplace(textureData.sourcePath.generic_string(), textureIndex);
     return textureIndex;
 }
 
@@ -1483,6 +1548,9 @@ Result<> Vulkan::create_scene_render_target()
 {
     VkDevice device = m_vulkanDevice.get_device();
     VkFormat colorFormat = m_swapchain.get_format();
+    m_sceneColorMemoryBytes = 0;
+    m_sceneDepthMemoryBytes = 0;
+    m_msaaColorMemoryBytes = 0;
 
     auto depthFormatResult = find_depth_format();
     if (!depthFormatResult)
@@ -1490,13 +1558,15 @@ Result<> Vulkan::create_scene_render_target()
     VkFormat depthFormat = depthFormatResult.value();
 
     // Resolve/final color image (1x sample), sampled by ImGui viewport.
-    if (auto res =
-            m_vulkanDevice.create_image(m_sceneRenderWidth, m_sceneRenderHeight, colorFormat, VK_IMAGE_TILING_OPTIMAL,
-                                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                                            VK_IMAGE_USAGE_SAMPLED_BIT,
-                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_sceneColorImage, m_sceneColorMemory);
+    VkDeviceSize sceneColorAllocBytes = 0;
+    if (auto res = m_vulkanDevice.create_image(
+            m_sceneRenderWidth, m_sceneRenderHeight, colorFormat, VK_IMAGE_TILING_OPTIMAL,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_sceneColorImage, m_sceneColorMemory, VK_SAMPLE_COUNT_1_BIT,
+            &sceneColorAllocBytes);
         !res)
         return res;
+    m_sceneColorMemoryBytes = static_cast<uint64_t>(sceneColorAllocBytes);
 
     auto colorViewResult = m_vulkanDevice.create_image_view(m_sceneColorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT);
     if (!colorViewResult)
@@ -1504,12 +1574,14 @@ Result<> Vulkan::create_scene_render_target()
     m_sceneColorView = colorViewResult.value();
 
     // Create depth image (at MSAA sample count)
+    VkDeviceSize sceneDepthAllocBytes = 0;
     if (auto res = m_vulkanDevice.create_image(m_sceneRenderWidth, m_sceneRenderHeight, depthFormat,
                                                VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_sceneDepthImage,
-                                               m_sceneDepthMemory, m_msaaSamples);
+                                               m_sceneDepthMemory, m_msaaSamples, &sceneDepthAllocBytes);
         !res)
         return res;
+    m_sceneDepthMemoryBytes = static_cast<uint64_t>(sceneDepthAllocBytes);
 
     auto depthViewResult = m_vulkanDevice.create_image_view(m_sceneDepthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
     if (!depthViewResult)
@@ -1519,12 +1591,15 @@ Result<> Vulkan::create_scene_render_target()
     // If MSAA, create MSAA color image
     if (m_msaaSamples != VK_SAMPLE_COUNT_1_BIT)
     {
+        VkDeviceSize msaaColorAllocBytes = 0;
         if (auto res = m_vulkanDevice.create_image(
                 m_sceneRenderWidth, m_sceneRenderHeight, colorFormat, VK_IMAGE_TILING_OPTIMAL,
                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_msaaColorImage, m_msaaColorMemory, m_msaaSamples);
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_msaaColorImage, m_msaaColorMemory, m_msaaSamples,
+                &msaaColorAllocBytes);
             !res)
             return res;
+        m_msaaColorMemoryBytes = static_cast<uint64_t>(msaaColorAllocBytes);
 
         auto msaaViewResult =
             m_vulkanDevice.create_image_view(m_msaaColorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT);
@@ -1567,7 +1642,12 @@ void Vulkan::cleanup_scene_render_target()
 {
     VkDevice device = m_vulkanDevice.get_device();
     if (!device)
+    {
+        m_sceneColorMemoryBytes = 0;
+        m_sceneDepthMemoryBytes = 0;
+        m_msaaColorMemoryBytes = 0;
         return;
+    }
 
     if (m_sceneFramebuffer != VK_NULL_HANDLE)
     {
@@ -1591,6 +1671,7 @@ void Vulkan::cleanup_scene_render_target()
         vkFreeMemory(device, m_msaaColorMemory, nullptr);
         m_msaaColorMemory = VK_NULL_HANDLE;
     }
+    m_msaaColorMemoryBytes = 0;
 
     // Depth
     if (m_sceneDepthView != VK_NULL_HANDLE)
@@ -1608,6 +1689,7 @@ void Vulkan::cleanup_scene_render_target()
         vkFreeMemory(device, m_sceneDepthMemory, nullptr);
         m_sceneDepthMemory = VK_NULL_HANDLE;
     }
+    m_sceneDepthMemoryBytes = 0;
 
     // Scene color
     if (m_sceneColorView != VK_NULL_HANDLE)
@@ -1625,6 +1707,7 @@ void Vulkan::cleanup_scene_render_target()
         vkFreeMemory(device, m_sceneColorMemory, nullptr);
         m_sceneColorMemory = VK_NULL_HANDLE;
     }
+    m_sceneColorMemoryBytes = 0;
 }
 
 void Vulkan::cleanup_scene_render_pass()
@@ -1694,7 +1777,7 @@ bool Vulkan::get_vsync() const noexcept
     return (mode == VK_PRESENT_MODE_FIFO_KHR || mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR);
 }
 
-void Vulkan::set_msaa_samples(int samples) noexcept
+void Vulkan::set_msaa_samples(std::int32_t samples) noexcept
 {
     VkSampleCountFlagBits desired = VK_SAMPLE_COUNT_1_BIT;
     switch (samples)
@@ -1754,9 +1837,9 @@ void Vulkan::set_msaa_samples(int samples) noexcept
     }
 }
 
-int Vulkan::get_msaa_samples() const noexcept
+std::int32_t Vulkan::get_msaa_samples() const noexcept
 {
-    return static_cast<int>(m_msaaSamples);
+    return static_cast<std::int32_t>(m_msaaSamples);
 }
 
 void Vulkan::set_render_scale(float scale) noexcept

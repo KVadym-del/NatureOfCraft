@@ -2,6 +2,7 @@
 #include "../../Core/Public/Expected.hpp"
 #include "../Public/MeshData.hpp"
 
+#include <filesystem>
 #include <memory>
 #include <string_view>
 
@@ -32,5 +33,5 @@ struct MeshLoader
 
     /// Returns the cache file path for a given source path.
     /// e.g. "Resources/Mustang.obj" -> "Resources/Mustang.noc_mesh"
-    static std::string get_cache_path(std::string_view sourcePath);
+    static std::filesystem::path get_cache_path(std::string_view sourcePath);
 };

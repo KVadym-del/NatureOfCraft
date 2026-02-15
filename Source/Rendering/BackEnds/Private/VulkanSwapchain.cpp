@@ -331,16 +331,17 @@ VkPresentModeKHR VulkanSwapchain::choose_swap_present_mode(
 
 VkExtent2D VulkanSwapchain::choose_swap_extent(const VkSurfaceCapabilitiesKHR& capabilities) noexcept
 {
-    if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max())
+    if (capabilities.currentExtent.width != std::numeric_limits<std::uint32_t>::max())
     {
         return capabilities.currentExtent;
     }
     else
     {
-        int width, height;
+        std::int32_t width;
+        std::int32_t height;
         glfwGetFramebufferSize(m_device.get_window(), &width, &height);
 
-        VkExtent2D actualExtent = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
+        VkExtent2D actualExtent = {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)};
 
         actualExtent.width =
             std::clamp(actualExtent.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);

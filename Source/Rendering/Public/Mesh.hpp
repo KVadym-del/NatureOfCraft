@@ -73,6 +73,8 @@ struct Mesh
     float boundsRadius{0.0f};
     VkDeviceSize vertexBufferBytes{0};
     VkDeviceSize indexBufferBytes{0};
+    VkDeviceSize vertexBufferAllocationBytes{0};
+    VkDeviceSize indexBufferAllocationBytes{0};
 };
 
 struct GpuTexture
@@ -82,6 +84,7 @@ struct GpuTexture
     VkImageView imageView{VK_NULL_HANDLE};
     uint32_t width{0};
     uint32_t height{0};
+    VkDeviceSize allocationBytes{0};
 };
 
 struct GpuMaterial

@@ -9,14 +9,13 @@
 
 #include <fmt/core.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-namespace fs = std::filesystem;
 
 // ── Entity wrapper for Lua ────────────────────────────────────────────
 // Provides a safe, limited view of an entity to Lua scripts.
@@ -53,9 +52,9 @@ struct LuaEntity
         return world->registry().any_of<MeshComponent>(handle);
     }
 
-    uint32_t id() const noexcept
+    std::uint32_t id() const noexcept
     {
-        return static_cast<uint32_t>(handle);
+        return static_cast<std::uint32_t>(handle);
     }
 };
 
@@ -70,18 +69,18 @@ struct ScriptEngine::Impl
         World* world{nullptr};
     };
     std::unordered_map<entt::entity, ScriptEnvironment> environments;
-    fs::path scriptRoot; // base directory for resolving relative script paths
+    std::filesystem::path scriptRoot; // base directory for resolving relative script paths
 
-    fs::path resolve_script_path(std::string_view scriptPath) const
+    std::filesystem::path resolve_script_path(std::string_view scriptPath) const
     {
-        fs::path p(scriptPath);
+        std::filesystem::path p(scriptPath);
         if (p.is_absolute())
             return p;
         // Resolve relative to the project root (script root)
         if (!scriptRoot.empty())
         {
-            fs::path resolved = scriptRoot / p;
-            if (fs::exists(resolved))
+            std::filesystem::path resolved = scriptRoot / p;
+            if (std::filesystem::exists(resolved))
                 return resolved;
         }
         // Fall back to relative path (resolved against CWD)
@@ -188,7 +187,7 @@ Result<> ScriptEngine::initialize()
 
 // ── set_script_root ───────────────────────────────────────────────────
 
-void ScriptEngine::set_script_root(const fs::path& root)
+void ScriptEngine::set_script_root(const std::filesystem::path& root)
 {
     m_impl->scriptRoot = root;
 }
@@ -202,9 +201,9 @@ Result<> ScriptEngine::load_script(World& world, entt::entity entity)
     if (!sc)
         return make_error("Entity has no ScriptComponent", ErrorCode::AssetInvalidData);
 
-    fs::path scriptPath = m_impl->resolve_script_path(sc->scriptPath);
+    std::filesystem::path scriptPath = m_impl->resolve_script_path(sc->scriptPath);
 
-    if (!fs::exists(scriptPath))
+    if (!std::filesystem::exists(scriptPath))
         return make_error(fmt::format("Script file not found: {}", scriptPath.string()), ErrorCode::AssetFileNotFound);
 
     // Read script source
@@ -242,12 +241,14 @@ void ScriptEngine::update(World& world, float dt)
 {
     auto& reg = world.registry();
     auto view = reg.view<ScriptComponent>();
+    bool scriptsMayMutateTransforms = false;
 
     for (auto entity : view)
     {
         auto& sc = view.get<ScriptComponent>(entity);
         if (sc.scriptPath.empty())
             continue;
+        scriptsMayMutateTransforms = true;
 
         // Lazy-load: if no environment exists yet, load the script
         auto envIt = m_impl->environments.find(entity);
@@ -311,6 +312,9 @@ void ScriptEngine::update(World& world, float dt)
             }
         }
     }
+
+    if (scriptsMayMutateTransforms)
+        world.mark_transforms_dirty();
 }
 
 // ── on_entity_destroyed ───────────────────────────────────────────────

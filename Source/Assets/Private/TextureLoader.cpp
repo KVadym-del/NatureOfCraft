@@ -5,6 +5,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#include <cstdint>
 #include <filesystem>
 
 TextureLoader::result_type TextureLoader::operator()(std::string_view path) const
@@ -25,18 +26,16 @@ TextureLoader::result_type TextureLoader::operator()(const TextureData& data) co
 
 Result<std::shared_ptr<TextureData>> TextureLoader::load_image(std::string_view path)
 {
-    namespace fs = std::filesystem;
-
     const std::string pathStr(path);
-    if (!fs::exists(pathStr))
+    if (!std::filesystem::exists(pathStr))
     {
         return make_error(fmt::format("Texture file not found: {}", path), ErrorCode::AssetFileNotFound);
     }
 
-    int width = 0;
-    int height = 0;
-    int channelsInFile = 0;
-    constexpr int desiredChannels = 4; // Force RGBA
+    std::int32_t width = 0;
+    std::int32_t height = 0;
+    std::int32_t channelsInFile = 0;
+    constexpr std::int32_t desiredChannels = 4;
 
     stbi_uc* pixels = stbi_load(pathStr.c_str(), &width, &height, &channelsInFile, desiredChannels);
     if (!pixels)
@@ -48,11 +47,11 @@ Result<std::shared_ptr<TextureData>> TextureLoader::load_image(std::string_view 
     const size_t imageSize = static_cast<size_t>(width) * static_cast<size_t>(height) * desiredChannels;
 
     auto texture = std::make_shared<TextureData>();
-    texture->name = fs::path(pathStr).stem().string();
-    texture->sourcePath = pathStr;
-    texture->width = static_cast<uint32_t>(width);
-    texture->height = static_cast<uint32_t>(height);
-    texture->channels = desiredChannels;
+    texture->name = std::filesystem::path(pathStr).stem().string();
+    texture->sourcePath = std::filesystem::path(pathStr);
+    texture->width = static_cast<std::uint32_t>(width);
+    texture->height = static_cast<std::uint32_t>(height);
+    texture->channels = static_cast<std::uint32_t>(desiredChannels);
     texture->pixels.assign(pixels, pixels + imageSize);
 
     stbi_image_free(pixels);
