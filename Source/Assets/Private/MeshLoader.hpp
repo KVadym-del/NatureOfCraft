@@ -20,18 +20,18 @@ struct MeshLoader
     /// Load a mesh from the given file path.
     /// Checks for a binary cache file (.noc_mesh) first.
     /// Falls back to OBJ parsing, then writes the cache.
-    result_type operator()(std::string_view path) const;
+    result_type operator()(const std::filesystem::path& path) const;
 
     /// Parse an OBJ file directly into MeshData (no caching).
-    static Result<std::shared_ptr<MeshData>> parse_obj(std::string_view path);
+    static Result<std::shared_ptr<MeshData>> parse_obj(const std::filesystem::path& path);
 
     /// Serialize MeshData to a FlatBuffer binary cache file.
-    static Result<> write_cache(const MeshData& mesh, std::string_view cachePath);
+    static Result<> write_cache(const MeshData& mesh, const std::filesystem::path& cachePath);
 
     /// Deserialize MeshData from a FlatBuffer binary cache file.
-    static Result<std::shared_ptr<MeshData>> read_cache(std::string_view cachePath);
+    static Result<std::shared_ptr<MeshData>> read_cache(const std::filesystem::path& cachePath);
 
     /// Returns the cache file path for a given source path.
     /// e.g. "Resources/Mustang.obj" -> "Resources/Mustang.noc_mesh"
-    static std::filesystem::path get_cache_path(std::string_view sourcePath);
+    static std::filesystem::path get_cache_path(std::filesystem::path& sourcePath);
 };

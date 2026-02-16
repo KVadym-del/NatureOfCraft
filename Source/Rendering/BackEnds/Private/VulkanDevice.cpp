@@ -834,3 +834,4 @@ Result<> VulkanDevice::copy_buffer_to_image(VkBuffer buffer, VkImage image, uint
         return make_error("Failed to submit buffer-to-image copy command", ErrorCode::VulkanCopyBufferToImageFailed);
     return {};
 }
+

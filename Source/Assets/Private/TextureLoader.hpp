@@ -21,11 +21,11 @@ struct NOC_EXPORT TextureLoader
     /// Load a texture from the given file path.
     /// Forces RGBA8 output (4 channels, 8 bits per channel).
     /// Returns nullptr on failure (EnTT cache convention — load silently fails).
-    result_type operator()(std::string_view path) const;
+    result_type operator()(const std::filesystem::path& path) const;
 
     /// Wrap pre-built TextureData into a shared_ptr (for programmatic textures).
     result_type operator()(const TextureData& data) const;
 
     /// Load a texture with full error reporting.
-    static Result<std::shared_ptr<TextureData>> load_image(std::string_view path);
+    static Result<std::shared_ptr<TextureData>> load_image(const std::filesystem::path& path);
 };

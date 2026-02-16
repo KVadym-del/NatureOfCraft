@@ -15,26 +15,26 @@ AssetManager::~AssetManager()
         m_executor->wait_for_all();
 }
 
-entt::id_type AssetManager::path_to_id(std::string_view path)
+entt::id_type AssetManager::path_to_id(const std::filesystem::path& path)
 {
-    return entt::hashed_string{path.data(), path.size()};
+    return entt::hashed_string{path.string().data(), path.string().size()};
 }
 
 // --- Mesh ---
 
-entt::resource<MeshData> AssetManager::load_mesh(std::string_view path)
+entt::resource<MeshData> AssetManager::load_mesh(const std::filesystem::path& path)
 {
     auto id = path_to_id(path);
     auto [it, inserted] = m_meshCache.load(id, path);
     return it->second;
 }
 
-bool AssetManager::contains_mesh(std::string_view path) const
+bool AssetManager::contains_mesh(const std::filesystem::path& path) const
 {
     return m_meshCache.contains(path_to_id(path));
 }
 
-entt::resource<const MeshData> AssetManager::get_mesh(std::string_view path) const
+entt::resource<const MeshData> AssetManager::get_mesh(const std::filesystem::path& path) const
 {
     return m_meshCache[path_to_id(path)];
 }
@@ -75,7 +75,7 @@ void AssetManager::clear_materials() noexcept
 
 // --- Texture (stub implementation — data model ready, GPU upload deferred) ---
 
-entt::resource<TextureData> AssetManager::load_texture(std::string_view path)
+entt::resource<TextureData> AssetManager::load_texture(const std::filesystem::path& path)
 {
     auto id = path_to_id(path);
     auto [it, inserted] = m_textureCache.load(id, path);
@@ -106,14 +106,14 @@ void AssetManager::clear_textures() noexcept
 
 // --- Model ---
 
-entt::resource<ModelData> AssetManager::load_model(std::string_view path)
+entt::resource<ModelData> AssetManager::load_model(const std::filesystem::path& path)
 {
     auto id = path_to_id(path);
     auto [it, inserted] = m_modelCache.load(id, path);
     return it->second;
 }
 
-bool AssetManager::contains_model(std::string_view path) const
+bool AssetManager::contains_model(const std::filesystem::path& path) const
 {
     return m_modelCache.contains(path_to_id(path));
 }

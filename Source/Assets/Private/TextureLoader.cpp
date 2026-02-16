@@ -8,12 +8,12 @@
 #include <cstdint>
 #include <filesystem>
 
-TextureLoader::result_type TextureLoader::operator()(std::string_view path) const
+TextureLoader::result_type TextureLoader::operator()(const std::filesystem::path& path) const
 {
     auto result = load_image(path);
     if (!result)
     {
-        fmt::print(stderr, "TextureLoader: failed to load '{}': {}\n", path, result.error().message);
+        fmt::print(stderr, "TextureLoader: failed to load '{}': {}\n", path.string(), result.error().message);
         return nullptr;
     }
     return std::move(result.value());
@@ -24,12 +24,11 @@ TextureLoader::result_type TextureLoader::operator()(const TextureData& data) co
     return std::make_shared<TextureData>(data);
 }
 
-Result<std::shared_ptr<TextureData>> TextureLoader::load_image(std::string_view path)
+Result<std::shared_ptr<TextureData>> TextureLoader::load_image(const std::filesystem::path& path)
 {
-    const std::string pathStr(path);
-    if (!std::filesystem::exists(pathStr))
+    if (!std::filesystem::exists(path))
     {
-        return make_error(fmt::format("Texture file not found: {}", path), ErrorCode::AssetFileNotFound);
+        return make_error(fmt::format("Texture file not found: {}", path.string()), ErrorCode::AssetFileNotFound);
     }
 
     std::int32_t width = 0;
@@ -37,18 +36,18 @@ Result<std::shared_ptr<TextureData>> TextureLoader::load_image(std::string_view 
     std::int32_t channelsInFile = 0;
     constexpr std::int32_t desiredChannels = 4;
 
-    stbi_uc* pixels = stbi_load(pathStr.c_str(), &width, &height, &channelsInFile, desiredChannels);
+    stbi_uc* pixels = stbi_load(path.string().c_str(), &width, &height, &channelsInFile, desiredChannels);
     if (!pixels)
     {
-        return make_error(fmt::format("stb_image failed to load '{}': {}", path, stbi_failure_reason()),
+        return make_error(fmt::format("stb_image failed to load '{}': {}", path.string(), stbi_failure_reason()),
                           ErrorCode::AssetParsingFailed);
     }
 
     const size_t imageSize = static_cast<size_t>(width) * static_cast<size_t>(height) * desiredChannels;
 
     auto texture = std::make_shared<TextureData>();
-    texture->name = std::filesystem::path(pathStr).stem().string();
-    texture->sourcePath = std::filesystem::path(pathStr);
+    texture->name = path.stem().string();
+    texture->sourcePath = path;
     texture->width = static_cast<std::uint32_t>(width);
     texture->height = static_cast<std::uint32_t>(height);
     texture->channels = static_cast<std::uint32_t>(desiredChannels);

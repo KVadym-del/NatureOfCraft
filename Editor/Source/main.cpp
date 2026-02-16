@@ -613,7 +613,8 @@ static std::uint32_t upload_material_texture(
     return textureIndex;
 }
 
-static bool import_model(std::string_view objPath, AssetManager& assetManager, IRenderer& renderer, World& world,
+static bool import_model(const std::filesystem::path& objPath, AssetManager& assetManager, IRenderer& renderer,
+                         World& world,
                          StatusMessage& status, Project* project)
 {
     entt::resource<ModelData> modelHandle;
@@ -623,13 +624,13 @@ static bool import_model(std::string_view objPath, AssetManager& assetManager, I
     }
     catch (const std::exception& e)
     {
-        status = {fmt::format("Failed to load model '{}': {}", objPath, e.what()), true, 5.0f};
+        status = {fmt::format("Failed to load model '{}': {}", objPath.string(), e.what()), true, 5.0f};
         return false;
     }
 
     if (!modelHandle)
     {
-        status = {fmt::format("Failed to load model '{}'", objPath), true, 5.0f};
+        status = {fmt::format("Failed to load model '{}'", objPath.string()), true, 5.0f};
         return false;
     }
 
@@ -647,7 +648,7 @@ static bool import_model(std::string_view objPath, AssetManager& assetManager, I
 
         std::string modelName = model.name;
         if (modelName.empty())
-            modelName = std::filesystem::path(objPath).stem().string();
+            modelName = objPath.stem().string();
 
         std::filesystem::path cacheRelPath = std::filesystem::path("Assets") / "Models" / (modelName + ".noc_model");
         std::string cacheAbsPath = project->get_absolute_path(cacheRelPath);
@@ -662,12 +663,12 @@ static bool import_model(std::string_view objPath, AssetManager& assetManager, I
         else
         {
             fmt::print("Warning: failed to write model cache: {}\n", writeResult.error().message);
-            cachedAssetPath = std::string(objPath);
+            cachedAssetPath = objPath.string();
         }
     }
     else
     {
-        cachedAssetPath = std::string(objPath);
+        cachedAssetPath = objPath.string();
     }
 
     const auto preparedTextureHandles = prepare_model_texture_handles(assetManager, model, project);
@@ -698,7 +699,7 @@ static bool import_model(std::string_view objPath, AssetManager& assetManager, I
 
     std::string modelName = model.name;
     if (modelName.empty())
-        modelName = std::filesystem::path(objPath).stem().string();
+        modelName = objPath.stem().string();
 
     entt::entity modelRoot = world.create_entity(modelName);
 

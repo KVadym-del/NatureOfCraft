@@ -113,38 +113,36 @@ static void compute_tangents(MeshData& mesh)
     }
 }
 
-ModelLoader::result_type ModelLoader::operator()(std::string_view path) const
+ModelLoader::result_type ModelLoader::operator()(const std::filesystem::path& path) const
 {
-    std::filesystem::path filePath(path);
-    if (filePath.extension() == ".noc_model")
+    if (path.extension() == ".noc_model")
     {
         auto cached = read_cache(path);
         if (cached)
         {
-            fmt::print("Loaded model from cache: {}\n", path);
+            fmt::print("Loaded model from cache: {}\n", path.string());
             return std::move(cached.value());
         }
-        fmt::print(stderr, "ModelLoader: failed to read cache '{}': {}\n", path, cached.error().message);
+        fmt::print(stderr, "ModelLoader: failed to read cache '{}': {}\n", path.string(), cached.error().message);
         return nullptr;
     }
 
     auto result = parse_model(path);
     if (!result)
     {
-        fmt::print(stderr, "ModelLoader: failed to load '{}': {}\n", path, result.error().message);
+        fmt::print(stderr, "ModelLoader: failed to load '{}': {}\n", path.string(), result.error().message);
         return nullptr;
     }
     return std::move(result.value());
 }
 
-Result<std::shared_ptr<ModelData>> ModelLoader::parse_model(std::string_view path)
+Result<std::shared_ptr<ModelData>> ModelLoader::parse_model(const std::filesystem::path& path)
 {
-    std::filesystem::path filePath(path);
-    if (!std::filesystem::exists(filePath))
-        return make_error(fmt::format("Model file not found: {}", path), ErrorCode::AssetFileNotFound);
+    if (!std::filesystem::exists(path))
+        return make_error(fmt::format("Model file not found: {}", path.string()), ErrorCode::AssetFileNotFound);
 
     rapidobj::Result result =
-        rapidobj::ParseFile(filePath, rapidobj::MaterialLibrary::Default(rapidobj::Load::Optional));
+        rapidobj::ParseFile(path, rapidobj::MaterialLibrary::Default(rapidobj::Load::Optional));
     if (result.error)
         return make_error(result.error.code.message(), ErrorCode::AssetParsingFailed);
 
@@ -153,7 +151,7 @@ Result<std::shared_ptr<ModelData>> ModelLoader::parse_model(std::string_view pat
     const auto numTexCoords = attrib.texcoords.size() / 2;
     const auto numNormals = attrib.normals.size() / 3;
 
-    const std::filesystem::path objDir = filePath.parent_path();
+    const std::filesystem::path objDir = path.parent_path();
 
     std::vector<MaterialData> materials;
     for (const auto& mat : result.materials)
@@ -348,8 +346,8 @@ Result<std::shared_ptr<ModelData>> ModelLoader::parse_model(std::string_view pat
     }
 
     auto model = std::make_shared<ModelData>();
-    model->name = filePath.stem().string();
-    model->sourcePath = filePath;
+    model->name = path.stem().string();
+    model->sourcePath = path;
     model->materials = std::move(materials);
 
     std::vector<size_t> activeMaterialIndices;
@@ -406,14 +404,13 @@ Result<std::shared_ptr<ModelData>> ModelLoader::parse_model(std::string_view pat
 
 namespace fb = NatureOfCraft::Assets;
 
-std::filesystem::path ModelLoader::get_cache_path(std::string_view sourcePath)
+std::filesystem::path ModelLoader::get_cache_path(std::filesystem::path& sourcePath)
 {
-    std::filesystem::path p(sourcePath);
-    p.replace_extension(".noc_model");
-    return p;
+    sourcePath.replace_extension(".noc_model");
+    return sourcePath;
 }
 
-Result<> ModelLoader::write_cache(const ModelData& model, std::string_view cachePath)
+Result<> ModelLoader::write_cache(const ModelData& model, const std::filesystem::path& cachePath)
 {
     flatbuffers::FlatBufferBuilder fbb(4096);
 
@@ -460,27 +457,28 @@ Result<> ModelLoader::write_cache(const ModelData& model, std::string_view cache
 
     fb::FinishModelAssetBuffer(fbb, asset);
 
-    std::ofstream file(std::string(cachePath), std::ios::binary);
+    std::ofstream file(cachePath, std::ios::binary);
     if (!file.is_open())
-        return make_error(fmt::format("Failed to open model cache for writing: {}", cachePath),
+        return make_error(fmt::format("Failed to open model cache for writing: {}", cachePath.string()),
                           ErrorCode::AssetCacheWriteFailed);
 
     file.write(reinterpret_cast<const char*>(fbb.GetBufferPointer()), static_cast<std::streamsize>(fbb.GetSize()));
     if (!file.good())
-        return make_error(fmt::format("Failed to write model cache: {}", cachePath), ErrorCode::AssetCacheWriteFailed);
+        return make_error(fmt::format("Failed to write model cache: {}", cachePath.string()), ErrorCode::AssetCacheWriteFailed);
 
     return {};
 }
 
-Result<std::shared_ptr<ModelData>> ModelLoader::read_cache(std::string_view cachePath)
+Result<std::shared_ptr<ModelData>> ModelLoader::read_cache(const std::filesystem::path& cachePath)
 {
-    std::ifstream file(std::string(cachePath), std::ios::binary | std::ios::ate);
+    std::ifstream file(cachePath, std::ios::binary | std::ios::ate);
     if (!file.is_open())
-        return make_error(fmt::format("Failed to open model cache: {}", cachePath), ErrorCode::AssetCacheReadFailed);
+        return make_error(fmt::format("Failed to open model cache: {}", cachePath.string()), ErrorCode::AssetCacheReadFailed);
 
     auto fileSize = file.tellg();
     if (fileSize <= 0)
-        return make_error(fmt::format("Model cache file is empty: {}", cachePath), ErrorCode::AssetCacheReadFailed);
+        return make_error(fmt::format("Model cache file is empty: {}", cachePath.string()),
+                          ErrorCode::AssetCacheReadFailed);
 
     file.seekg(0, std::ios::beg);
     std::vector<std::uint8_t> buffer(static_cast<size_t>(fileSize));
@@ -488,12 +486,12 @@ Result<std::shared_ptr<ModelData>> ModelLoader::read_cache(std::string_view cach
 
     flatbuffers::Verifier verifier(buffer.data(), buffer.size());
     if (!fb::VerifyModelAssetBuffer(verifier))
-        return make_error(fmt::format("Model cache verification failed: {}", cachePath),
+        return make_error(fmt::format("Model cache verification failed: {}", cachePath.string()),
                           ErrorCode::AssetCacheReadFailed);
 
     const auto* asset = fb::GetModelAsset(buffer.data());
     if (!asset)
-        return make_error(fmt::format("Failed to deserialize model cache: {}", cachePath),
+        return make_error(fmt::format("Failed to deserialize model cache: {}", cachePath.string()),
                           ErrorCode::AssetCacheReadFailed);
 
     auto model = std::make_shared<ModelData>();

@@ -32,21 +32,21 @@ template <> struct hash<Vertex>
 };
 } // namespace std
 
-std::filesystem::path MeshLoader::get_cache_path(std::string_view sourcePath)
+std::filesystem::path MeshLoader::get_cache_path(std::filesystem::path& sourcePath)
 {
-    std::filesystem::path p(sourcePath);
-    p.replace_extension(".noc_mesh");
-    return p;
+    sourcePath.replace_extension(".noc_mesh");
+    return sourcePath;
 }
 
-MeshLoader::result_type MeshLoader::operator()(std::string_view path) const
+MeshLoader::result_type MeshLoader::operator()(const std::filesystem::path& path) const
 {
-    const std::filesystem::path cachePath = get_cache_path(path);
+    std::filesystem::path temPath = path;
+    const std::filesystem::path cachePath = get_cache_path(temPath);
 
     if (std::filesystem::exists(cachePath) && std::filesystem::exists(path))
     {
-        auto sourceTime = std::filesystem::last_write_time(std::filesystem::path(path));
-        auto cacheTime = std::filesystem::last_write_time(std::filesystem::path(cachePath));
+        auto sourceTime = std::filesystem::last_write_time(path);
+        auto cacheTime = std::filesystem::last_write_time(cachePath);
 
         if (cacheTime >= sourceTime)
         {
@@ -56,7 +56,7 @@ MeshLoader::result_type MeshLoader::operator()(std::string_view path) const
                 fmt::print("Loaded mesh from cache: {}\n", cachePath.generic_string());
                 return cached.value();
             }
-            fmt::print("Cache read failed, re-parsing: {}\n", path);
+            fmt::print("Cache read failed, re-parsing: {}\n", path.string());
         }
     }
 
@@ -80,15 +80,13 @@ MeshLoader::result_type MeshLoader::operator()(std::string_view path) const
     return parsed.value();
 }
 
-Result<std::shared_ptr<MeshData>> MeshLoader::parse_obj(std::string_view path)
+Result<std::shared_ptr<MeshData>> MeshLoader::parse_obj(const std::filesystem::path& path)
 {
-    std::filesystem::path filePath(path);
-
-    if (!std::filesystem::exists(filePath))
-        return make_error(fmt::format("File not found: {}", path), ErrorCode::AssetFileNotFound);
+    if (!std::filesystem::exists(path))
+        return make_error(fmt::format("File not found: {}", path.string()), ErrorCode::AssetFileNotFound);
 
     rapidobj::Result result =
-        rapidobj::ParseFile(filePath, rapidobj::MaterialLibrary::Default(rapidobj::Load::Optional));
+        rapidobj::ParseFile(path, rapidobj::MaterialLibrary::Default(rapidobj::Load::Optional));
     if (result.error)
         return make_error(result.error.code.message(), ErrorCode::AssetParsingFailed);
 
@@ -177,8 +175,8 @@ Result<std::shared_ptr<MeshData>> MeshLoader::parse_obj(std::string_view path)
         return make_error("Model has no valid vertices", ErrorCode::AssetInvalidData);
 
     auto mesh = std::make_shared<MeshData>();
-    mesh->name = filePath.stem().string();
-    mesh->sourcePath = filePath;
+    mesh->name = path.stem().string();
+    mesh->sourcePath = path;
     mesh->vertices = std::move(vertices);
     mesh->indices = std::move(indices);
     mesh->compute_bounds();
@@ -265,7 +263,7 @@ Result<std::shared_ptr<MeshData>> MeshLoader::parse_obj(std::string_view path)
     return mesh;
 }
 
-Result<> MeshLoader::write_cache(const MeshData& mesh, std::string_view cachePath)
+Result<> MeshLoader::write_cache(const MeshData& mesh, const std::filesystem::path& cachePath)
 {
     namespace fb = NatureOfCraft::Assets;
 
@@ -289,29 +287,29 @@ Result<> MeshLoader::write_cache(const MeshData& mesh, std::string_view cachePat
 
     fb::FinishMeshAssetBuffer(builder, meshAsset);
 
-    std::ofstream file(std::string(cachePath), std::ios::binary);
+    std::ofstream file(cachePath, std::ios::binary);
     if (!file.is_open())
-        return make_error(fmt::format("Failed to open cache file for writing: {}", cachePath),
+        return make_error(fmt::format("Failed to open cache file for writing: {}", cachePath.string()),
                           ErrorCode::AssetCacheWriteFailed);
 
     file.write(reinterpret_cast<const char*>(builder.GetBufferPointer()), builder.GetSize());
     if (!file.good())
-        return make_error(fmt::format("Failed to write cache file: {}", cachePath), ErrorCode::AssetCacheWriteFailed);
+        return make_error(fmt::format("Failed to write cache file: {}", cachePath.string()), ErrorCode::AssetCacheWriteFailed);
 
     return {};
 }
 
-Result<std::shared_ptr<MeshData>> MeshLoader::read_cache(std::string_view cachePath)
+Result<std::shared_ptr<MeshData>> MeshLoader::read_cache(const std::filesystem::path& cachePath)
 {
     namespace fb = NatureOfCraft::Assets;
 
-    std::ifstream file(std::string(cachePath), std::ios::binary | std::ios::ate);
+    std::ifstream file(cachePath, std::ios::binary | std::ios::ate);
     if (!file.is_open())
-        return make_error(fmt::format("Failed to open cache file: {}", cachePath), ErrorCode::AssetCacheReadFailed);
+        return make_error(fmt::format("Failed to open cache file: {}", cachePath.string()), ErrorCode::AssetCacheReadFailed);
 
     auto fileSize = file.tellg();
     if (fileSize <= 0)
-        return make_error(fmt::format("Cache file is empty: {}", cachePath), ErrorCode::AssetCacheReadFailed);
+        return make_error(fmt::format("Cache file is empty: {}", cachePath.string()), ErrorCode::AssetCacheReadFailed);
 
     file.seekg(0, std::ios::beg);
     std::vector<std::uint8_t> buffer(static_cast<size_t>(fileSize));
@@ -319,12 +317,12 @@ Result<std::shared_ptr<MeshData>> MeshLoader::read_cache(std::string_view cacheP
 
     flatbuffers::Verifier verifier(buffer.data(), buffer.size());
     if (!fb::VerifyMeshAssetBuffer(verifier))
-        return make_error(fmt::format("Cache file verification failed: {}", cachePath),
+        return make_error(fmt::format("Cache file verification failed: {}", cachePath.string()),
                           ErrorCode::AssetCacheReadFailed);
 
     const auto* meshAsset = fb::GetMeshAsset(buffer.data());
     if (!meshAsset)
-        return make_error(fmt::format("Failed to deserialize cache file: {}", cachePath),
+        return make_error(fmt::format("Failed to deserialize cache file: {}", cachePath.string()),
                           ErrorCode::AssetCacheReadFailed);
 
     auto mesh = std::make_shared<MeshData>();

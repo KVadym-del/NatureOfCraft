@@ -13,6 +13,7 @@
 #include <memory>
 #include <string_view>
 #include <thread>
+#include <filesystem>
 
 #include <entt/core/hashed_string.hpp>
 #include <entt/resource/cache.hpp>
@@ -46,13 +47,13 @@ class NOC_EXPORT AssetManager
     /// Load a mesh synchronously. Returns a resource handle.
     /// Uses FlatBuffer binary cache if available, otherwise parses OBJ.
     /// Deduplicates: loading the same path twice returns the same handle.
-    entt::resource<MeshData> load_mesh(std::string_view path);
+    entt::resource<MeshData> load_mesh(const std::filesystem::path& path);
 
     /// Check if a mesh with the given path is already loaded.
-    bool contains_mesh(std::string_view path) const;
+    bool contains_mesh(const std::filesystem::path& path) const;
 
     /// Get a mesh by path if already loaded. Returns an invalid handle if not found.
-    entt::resource<const MeshData> get_mesh(std::string_view path) const;
+    entt::resource<const MeshData> get_mesh(const std::filesystem::path& path) const;
 
     /// Number of loaded meshes.
     size_t mesh_count() const noexcept;
@@ -76,7 +77,7 @@ class NOC_EXPORT AssetManager
 
     /// Load a texture from an image file (PNG, JPG, TGA, etc.).
     /// Forces RGBA8 output. Deduplicates by path.
-    entt::resource<TextureData> load_texture(std::string_view path);
+    entt::resource<TextureData> load_texture(const std::filesystem::path& path);
 
     /// Load a texture from pre-built data (e.g. programmatic textures).
     entt::resource<TextureData> load_texture(std::string_view name, const TextureData& data);
@@ -92,10 +93,10 @@ class NOC_EXPORT AssetManager
 
     /// Load a complete model (OBJ + MTL). Splits geometry by material,
     /// extracts texture paths, computes tangents per sub-mesh.
-    entt::resource<ModelData> load_model(std::string_view path);
+    entt::resource<ModelData> load_model(const std::filesystem::path& path);
 
     /// Returns true if a model handle for this path is cached.
-    bool contains_model(std::string_view path) const;
+    bool contains_model(const std::filesystem::path& path) const;
     /// Returns the number of cached models.
     size_t model_count() const noexcept;
     /// Clears all cached model handles.
@@ -116,7 +117,7 @@ class NOC_EXPORT AssetManager
 
   private:
     /// Compute a stable ID from a file path for use as entt::resource_cache key.
-    static entt::id_type path_to_id(std::string_view path);
+    static entt::id_type path_to_id(const std::filesystem::path& path);
 
     entt::resource_cache<MeshData, MeshLoader> m_meshCache;
     entt::resource_cache<MaterialData> m_materialCache;
