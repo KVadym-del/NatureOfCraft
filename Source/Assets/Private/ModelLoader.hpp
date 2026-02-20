@@ -27,8 +27,14 @@ struct NOC_EXPORT ModelLoader
     /// Returns nullptr on failure (EnTT cache convention).
     result_type operator()(const std::filesystem::path& path) const;
 
-    /// Load with full error reporting (OBJ + MTL parsing).
+    /// Load with full error reporting (dispatches to parse_obj or parse_fbx).
     static Result<std::shared_ptr<ModelData>> parse_model(const std::filesystem::path& path);
+
+    /// Parse an OBJ + MTL file directly.
+    static Result<std::shared_ptr<ModelData>> parse_obj(const std::filesystem::path& path);
+
+    /// Parse an FBX file directly.
+    static Result<std::shared_ptr<ModelData>> parse_fbx(const std::filesystem::path& path);
 
     /// Serialize ModelData to a FlatBuffer binary cache file (.noc_model).
     /// Texture paths stored in materials should already be project-relative.

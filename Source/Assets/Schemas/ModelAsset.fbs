@@ -52,6 +52,8 @@ table MaterialEntry {
     albedo_texture_path: string;   // project-relative path
     normal_texture_path: string;   // project-relative path
     roughness_texture_path: string;
+    metallic_texture_path: string;
+    ao_texture_path: string;
 }
 
 table ModelAsset {

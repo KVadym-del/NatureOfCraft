@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project("NatureOfCraft" LANGUAGES CXX)
+project("NatureOfCraft" LANGUAGES C CXX)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:EditAndContinue>")

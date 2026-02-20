@@ -44,7 +44,13 @@ add_custom_target(FlatBufferSchemas DEPENDS ${FBS_GENERATED_HEADERS})
 file(GLOB_RECURSE SOURCE_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/*.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/*.c"
 )
+
+list(APPEND SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/ufbx/ufbx.c")
+
+set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/ufbx/ufbx.c" PROPERTIES LANGUAGE CXX)
+
 
 add_library(Source SHARED ${SOURCE_FILES})
 add_dependencies(Source FlatBufferSchemas)

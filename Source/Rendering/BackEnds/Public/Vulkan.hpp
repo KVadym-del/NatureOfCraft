@@ -56,7 +56,9 @@ class NOC_EXPORT Vulkan : public IRenderer
 
     Result<uint32_t> upload_texture(const TextureData& textureData) override;
 
-    Result<uint32_t> upload_material(uint32_t albedoTextureIndex, uint32_t normalTextureIndex) override;
+    Result<uint32_t> upload_material(uint32_t albedoTextureIndex, uint32_t normalTextureIndex,
+                                     uint32_t roughnessTextureIndex, uint32_t metallicTextureIndex,
+                                     uint32_t aoTextureIndex) override;
 
     Result<> clear_scene_content() noexcept override;
 
@@ -339,6 +341,9 @@ class NOC_EXPORT Vulkan : public IRenderer
     VkSampler m_sampler{VK_NULL_HANDLE};
     uint32_t m_defaultAlbedoTextureIndex{};
     uint32_t m_defaultNormalTextureIndex{};
+    uint32_t m_defaultRoughnessTextureIndex{};
+    uint32_t m_defaultMetallicTextureIndex{};
+    uint32_t m_defaultAOTextureIndex{};
 
     std::vector<GpuMaterial> m_materials{};
     std::unordered_map<uint64_t, uint32_t> m_materialLookup{};

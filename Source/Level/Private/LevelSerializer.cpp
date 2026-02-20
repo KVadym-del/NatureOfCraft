@@ -36,8 +36,9 @@ static fb::Offset<fbl::EntityData> serialize_entity(fb::FlatBufferBuilder& fbb, 
     fb::Offset<fbl::MeshComponentData> meshOffset = 0;
     if (const auto* mc = reg.try_get<MeshComponent>(entity))
     {
-        meshOffset = fbl::CreateMeshComponentDataDirect(fbb, mc->meshIndex, mc->materialIndex,
-                                                        mc->assetPath.empty() ? nullptr : mc->assetPath.c_str());
+        meshOffset = fbl::CreateMeshComponentData(fbb, mc->meshIndex, mc->materialIndex,
+                                                   mc->assetPath.empty() ? 0 : fbb.CreateString(mc->assetPath),
+                                                   mc->materialName.empty() ? 0 : fbb.CreateString(mc->materialName));
     }
 
     // Camera component (optional)
@@ -126,6 +127,7 @@ static entt::entity deserialize_entity(World& world, const fbl::EntityData* data
         mc.meshIndex = md->mesh_index();
         mc.materialIndex = md->material_index();
         mc.assetPath = md->asset_path() ? md->asset_path()->str() : "";
+        mc.materialName = md->material_name() ? md->material_name()->str() : "";
     }
 
     // Camera component

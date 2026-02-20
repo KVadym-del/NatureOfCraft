@@ -12,6 +12,7 @@
 #include <flatbuffers/flatbuffers.h>
 #include <fmt/core.h>
 #include <rapidobj/rapidobj.hpp>
+#include "../../ThirdParty/ufbx/ufbx.h"
 #include <taskflow/taskflow.hpp>
 
 #include <DirectXMath.h>
@@ -137,6 +138,13 @@ ModelLoader::result_type ModelLoader::operator()(const std::filesystem::path& pa
 }
 
 Result<std::shared_ptr<ModelData>> ModelLoader::parse_model(const std::filesystem::path& path)
+{
+    if (path.extension() == ".fbx")
+        return parse_fbx(path);
+    return parse_obj(path);
+}
+
+Result<std::shared_ptr<ModelData>> ModelLoader::parse_obj(const std::filesystem::path& path)
 {
     if (!std::filesystem::exists(path))
         return make_error(fmt::format("Model file not found: {}", path.string()), ErrorCode::AssetFileNotFound);
@@ -400,6 +408,288 @@ Result<std::shared_ptr<ModelData>> ModelLoader::parse_model(const std::filesyste
     return model;
 }
 
+Result<std::shared_ptr<ModelData>> ModelLoader::parse_fbx(const std::filesystem::path& path)
+{
+    if (!std::filesystem::exists(path))
+        return make_error(fmt::format("Model file not found: {}", path.string()), ErrorCode::AssetFileNotFound);
+
+    ufbx_load_opts opts{};
+    opts.target_axes = ufbx_axes_right_handed_y_up;
+    opts.target_unit_meters = 1.0f;
+    opts.generate_missing_normals = true;
+    opts.evaluate_skinning = false; // Add skinning evaluation if doing animated models later
+
+    ufbx_error error;
+    ufbx_scene* scene = ufbx_load_file(path.string().c_str(), &opts, &error);
+    if (!scene)
+    {
+        return make_error(fmt::format("Failed to parse FBX: {}", error.description.data), ErrorCode::AssetParsingFailed);
+    }
+
+    const std::filesystem::path objDir = path.parent_path();
+    std::vector<MaterialData> materials;
+
+    for (size_t matIdx = 0; matIdx < scene->materials.count; ++matIdx)
+    {
+        ufbx_material* mat = scene->materials.data[matIdx];
+        MaterialData matData;
+        matData.name = mat->name.data;
+
+        // Try getting PBR or diffuse color
+        if (mat->pbr.base_color.has_value)
+        {
+            matData.albedoColor = { (float)mat->pbr.base_color.value_vec4.x, (float)mat->pbr.base_color.value_vec4.y, (float)mat->pbr.base_color.value_vec4.z, 1.0f };
+        }
+        else if (mat->fbx.diffuse_color.has_value)
+        {
+             matData.albedoColor = { (float)mat->fbx.diffuse_color.value_vec4.x, (float)mat->fbx.diffuse_color.value_vec4.y, (float)mat->fbx.diffuse_color.value_vec4.z, 1.0f };
+        }
+        else
+        {
+             matData.albedoColor = { 1.0f, 1.0f, 1.0f, 1.0f };
+        }
+
+        auto getTex = [&](const ufbx_material_map& map) -> std::filesystem::path {
+            if (!map.texture)
+                return {};
+
+            std::string texPath = map.texture->filename.data;
+            std::filesystem::path p(texPath);
+
+            fmt::print("FBX texture reference: '{}' (raw embedded path)\n", texPath);
+
+            // 1) If the embedded path is absolute and exists, use it directly
+            if (p.is_absolute() && std::filesystem::exists(p))
+                return p;
+
+            // 2) Try the full relative path as-is from the FBX directory
+            {
+                std::filesystem::path candidate = objDir / p;
+                if (std::filesystem::exists(candidate))
+                    return candidate;
+            }
+
+            // 3) Try just the filename in the FBX directory
+            {
+                std::filesystem::path candidate = objDir / p.filename();
+                if (std::filesystem::exists(candidate))
+                    return candidate;
+            }
+
+            // 4) Search common texture subdirectories relative to the FBX file
+            const std::filesystem::path filename = p.filename();
+            const std::filesystem::path searchRoots[] = { objDir, objDir.parent_path() };
+            const std::string subdirs[] = { "textures", "Textures", "texture", "Texture",
+                                            "source/Textures", "source/textures",
+                                            "maps", "Maps", "materials", "Materials" };
+            for (const auto& root : searchRoots)
+            {
+                for (const auto& sub : subdirs)
+                {
+                    std::filesystem::path candidate = root / sub / filename;
+                    if (std::filesystem::exists(candidate))
+                        return candidate;
+                }
+            }
+
+            // 5) Last resort: return the best-guess path (filename in FBX dir)
+            return objDir / p.filename();
+        };
+
+        matData.albedoTexturePath = getTex(mat->pbr.base_color);
+        if (matData.albedoTexturePath.empty())
+             matData.albedoTexturePath = getTex(mat->fbx.diffuse_color);
+
+        matData.normalTexturePath = getTex(mat->pbr.normal_map);
+        if (matData.normalTexturePath.empty())
+             matData.normalTexturePath = getTex(mat->fbx.normal_map);
+
+        matData.roughnessTexturePath = getTex(mat->pbr.roughness);
+        matData.metallicTexturePath = getTex(mat->pbr.metalness);
+        matData.aoTexturePath = getTex(mat->pbr.ambient_occlusion);
+
+
+        // Extract PBR scalar values
+        if (mat->pbr.roughness.has_value)
+            matData.roughness = (float)mat->pbr.roughness.value_real;
+        if (mat->pbr.metalness.has_value)
+            matData.metallic = (float)mat->pbr.metalness.value_real;
+
+        materials.push_back(std::move(matData));
+    }
+
+    if (materials.empty())
+    {
+        MaterialData defaultMat;
+        defaultMat.name = "default";
+        materials.push_back(std::move(defaultMat));
+    }
+
+    struct MeshBuild
+    {
+        std::vector<Vertex> vertices;
+        std::vector<std::uint32_t> indices;
+        std::unordered_map<Vertex, std::uint32_t> uniqueVertices;
+
+        void addVertex(const Vertex& v)
+        {
+            auto [it, inserted] = uniqueVertices.emplace(v, static_cast<std::uint32_t>(vertices.size()));
+            if (inserted)
+                vertices.push_back(v);
+            indices.push_back(it->second);
+        }
+    };
+
+    const size_t matCount = materials.size();
+    std::vector<MeshBuild> meshBuilds(matCount);
+
+    tf::Taskflow taskflow;
+    std::vector<std::vector<MeshBuild>> localBuilds(scene->nodes.count, std::vector<MeshBuild>(matCount));
+
+    for (size_t nodeIdx = 0; nodeIdx < scene->nodes.count; ++nodeIdx)
+    {
+        taskflow.emplace([&, nodeIdx]() {
+             ufbx_node* node = scene->nodes.data[nodeIdx];
+             if (!node->mesh) return;
+
+             ufbx_mesh* mesh = node->mesh;
+             auto& localShapeBuild = localBuilds[nodeIdx];
+             
+             std::vector<uint32_t> triIndices(mesh->max_face_triangles * 3);
+
+             for (size_t faceIdx = 0; faceIdx < mesh->faces.count; ++faceIdx)
+             {
+                  ufbx_face face = mesh->faces.data[faceIdx];
+                  uint32_t numTris = ufbx_triangulate_face(triIndices.data(), triIndices.size(), mesh, face);
+                  
+                  int32_t matIdx = 0;
+                  if (mesh->face_material.count > 0)
+                  {
+                      int32_t matId = mesh->face_material.data[faceIdx];
+                      if (matId >= 0 && matId < (int32_t)node->materials.count)
+                      {
+                          ufbx_material* faceMat = node->materials.data[matId];
+                          for (size_t m = 0; m < scene->materials.count; ++m)
+                          {
+                              if (scene->materials.data[m] == faceMat)
+                              {
+                                  matIdx = (int32_t)m;
+                                  break;
+                              }
+                          }
+                      }
+                  }
+
+                  if (matIdx < 0 || static_cast<size_t>(matIdx) >= matCount) matIdx = 0;
+                  auto& build = localShapeBuild[matIdx];
+
+                  for (size_t i = 0; i < numTris * 3; ++i)
+                  {
+                      uint32_t fbxi = triIndices[i];
+                      Vertex v{};
+
+                      ufbx_vec3 pos = ufbx_get_vertex_vec3(&mesh->vertex_position, fbxi);
+                      pos = ufbx_transform_position(&node->geometry_to_world, pos);
+                      v.pos = { (float)pos.x, (float)pos.y, (float)pos.z };
+
+                      if (mesh->vertex_normal.exists)
+                      {
+                          ufbx_vec3 normal = ufbx_get_vertex_vec3(&mesh->vertex_normal, fbxi);
+                          ufbx_matrix normal_matrix = ufbx_matrix_for_normals(&node->geometry_to_world);
+                          ufbx_vec3 world_normal = ufbx_transform_direction(&normal_matrix, normal);
+                          float len = std::sqrt(world_normal.x * world_normal.x + world_normal.y * world_normal.y + world_normal.z * world_normal.z);
+                          if (len > 0.0001f) {
+                              v.normal = { (float)(world_normal.x / len), (float)(world_normal.y / len), (float)(world_normal.z / len) };
+                          } else {
+                              v.normal = {0.0f, 1.0f, 0.0f};
+                          }
+                      }
+                      else
+                      {
+                          v.normal = {0.0f, 1.0f, 0.0f};
+                      }
+
+                      if (mesh->vertex_uv.exists)
+                      {
+                           ufbx_vec2 uv = ufbx_get_vertex_vec2(&mesh->vertex_uv, fbxi);
+                           v.texCoord = { (float)uv.x, 1.0f - (float)uv.y };
+                      }
+
+                      build.addVertex(v);
+                  }
+             }
+        });
+    }
+
+    model_loader_executor().run(taskflow).wait();
+
+    for (const auto& localNodeBuilds : localBuilds)
+    {
+         for (size_t m = 0; m < matCount; ++m)
+         {
+              for (uint32_t idx : localNodeBuilds[m].indices) {
+                  meshBuilds[m].addVertex(localNodeBuilds[m].vertices[idx]);
+              }
+         }
+    }
+
+    ufbx_free_scene(scene);
+
+    auto model = std::make_shared<ModelData>();
+    model->name = path.stem().string();
+    model->sourcePath = path;
+    model->materials = std::move(materials);
+
+    std::vector<size_t> activeMaterialIndices;
+    activeMaterialIndices.reserve(matCount);
+    for (size_t i = 0; i < matCount; ++i)
+    {
+        if (!meshBuilds[i].vertices.empty())
+            activeMaterialIndices.push_back(i);
+    }
+
+    std::vector<MeshData> builtMeshes(activeMaterialIndices.size());
+    std::vector<std::int32_t> builtMaterialIndices(activeMaterialIndices.size(), 0);
+
+    auto build_submesh = [&](size_t outputIndex) {
+        const size_t materialIndex = activeMaterialIndices[outputIndex];
+        MeshData meshData;
+        meshData.name = fmt::format("{}_{}", model->name, model->materials[materialIndex].name);
+        meshData.sourcePath = model->sourcePath;
+        meshData.vertices = std::move(meshBuilds[materialIndex].vertices);
+        meshData.indices = std::move(meshBuilds[materialIndex].indices);
+        meshData.compute_bounds();
+        compute_tangents(meshData);
+        builtMeshes[outputIndex] = std::move(meshData);
+        builtMaterialIndices[outputIndex] = static_cast<std::int32_t>(materialIndex);
+    };
+
+    if (activeMaterialIndices.size() > 1)
+    {
+        tf::Taskflow taskflowMerge;
+        for (size_t outputIndex = 0; outputIndex < activeMaterialIndices.size(); ++outputIndex)
+        {
+            taskflowMerge.emplace([&, outputIndex]() { build_submesh(outputIndex); });
+        }
+        model_loader_executor().run(taskflowMerge).wait();
+    }
+    else if (!activeMaterialIndices.empty())
+    {
+        build_submesh(0);
+    }
+
+    model->meshes = std::move(builtMeshes);
+    model->meshMaterialIndices = std::move(builtMaterialIndices);
+
+    if (model->meshes.empty())
+        return make_error("Model has no valid geometry", ErrorCode::AssetInvalidData);
+
+    fmt::print("Loaded model '{}': {} meshes, {} materials\n", model->name, model->meshes.size(),
+               model->materials.size());
+
+    return model;
+}
+
 // ── Binary cache (.noc_model) ─────────────────────────────────────────
 
 namespace fb = NatureOfCraft::Assets;
@@ -444,11 +734,17 @@ Result<> ModelLoader::write_cache(const ModelData& model, const std::filesystem:
         const std::string normalPath = mat.normalTexturePath.empty() ? std::string{} : mat.normalTexturePath.generic_string();
         const std::string roughnessPath =
             mat.roughnessTexturePath.empty() ? std::string{} : mat.roughnessTexturePath.generic_string();
+        const std::string metallicPath =
+            mat.metallicTexturePath.empty() ? std::string{} : mat.metallicTexturePath.generic_string();
+        const std::string aoPath =
+            mat.aoTexturePath.empty() ? std::string{} : mat.aoTexturePath.generic_string();
 
         matOffsets.push_back(fb::CreateMaterialEntryDirect(
             fbb, mat.name.c_str(), &albedoCol, mat.roughness, mat.metallic,
             albedoPath.empty() ? nullptr : albedoPath.c_str(), normalPath.empty() ? nullptr : normalPath.c_str(),
-            roughnessPath.empty() ? nullptr : roughnessPath.c_str()));
+            roughnessPath.empty() ? nullptr : roughnessPath.c_str(),
+            metallicPath.empty() ? nullptr : metallicPath.c_str(),
+            aoPath.empty() ? nullptr : aoPath.c_str()));
     }
 
     const std::string modelSourcePath = model.sourcePath.generic_string();
@@ -525,6 +821,10 @@ Result<std::shared_ptr<ModelData>> ModelLoader::read_cache(const std::filesystem
                 mat.normalTexturePath = matEntry->normal_texture_path()->str();
             if (matEntry->roughness_texture_path())
                 mat.roughnessTexturePath = matEntry->roughness_texture_path()->str();
+            if (matEntry->metallic_texture_path())
+                mat.metallicTexturePath = matEntry->metallic_texture_path()->str();
+            if (matEntry->ao_texture_path())
+                mat.aoTexturePath = matEntry->ao_texture_path()->str();
 
             model->materials.push_back(std::move(mat));
         }

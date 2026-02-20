@@ -15,6 +15,14 @@ table MaterialAsset {
     albedo_texture_path: string;
     normal_texture_path: string;
     roughness_texture_path: string;
+    metallic_texture_path: string;
+    ao_texture_path: string;
+    // Embedded texture file bytes (PNG, JPG, etc.)
+    albedo_texture_data: [ubyte];
+    normal_texture_data: [ubyte];
+    roughness_texture_data: [ubyte];
+    metallic_texture_data: [ubyte];
+    ao_texture_data: [ubyte];
 }
 
 root_type MaterialAsset;

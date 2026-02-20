@@ -3,6 +3,7 @@
 #include <Assets/Private/ModelLoader.hpp>
 #include <Assets/Public/AssetManager.hpp>
 #include <Assets/Public/ModelData.hpp>
+#include <Assets/Generated/MaterialAsset_generated.h>
 #include <Camera/Public/Camera.hpp>
 #include <ECS/Public/Components.hpp>
 #include <Level/Public/Level.hpp>
@@ -27,6 +28,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <fmt/core.h>
 #include <memory>
 #include <set>
@@ -420,6 +422,7 @@ static std::vector<ProjectAssetEntry> scan_project_assets(const Project* project
     };
 
     collect_from_dir(std::filesystem::path("Assets") / "Models", "Optimized Models", {".noc_model"});
+    collect_from_dir(std::filesystem::path("Assets") / "Materials", "Materials", {".noc_material"});
     collect_from_dir(std::filesystem::path("Assets") / "Textures", "Textures", textureExts);
     collect_from_dir(std::filesystem::path("Assets") / "Shaders", "Shaders", shaderExts);
     collect_from_dir(std::filesystem::path("Scripts"), "Scripts", scriptExts);
@@ -431,6 +434,154 @@ static std::vector<ProjectAssetEntry> scan_project_assets(const Project* project
     });
 
     return assets;
+}
+
+// ── Material file persistence ─────────────────────────────────────────
+
+// Reads an entire file into a byte vector; returns empty on failure.
+static std::vector<uint8_t> read_file_bytes(const std::filesystem::path& path)
+{
+    std::vector<uint8_t> data;
+    std::ifstream ifs(path, std::ios::binary | std::ios::ate);
+    if (!ifs) return data;
+    auto sz = ifs.tellg();
+    if (sz <= 0) return data;
+    data.resize(static_cast<size_t>(sz));
+    ifs.seekg(0);
+    ifs.read(reinterpret_cast<char*>(data.data()), sz);
+    return data;
+}
+
+bool save_material_to_file(const MaterialData& mat, const std::string& name,
+                           const std::filesystem::path& filePath, const Project* project)
+{
+    namespace fb = NatureOfCraft::Assets;
+    flatbuffers::FlatBufferBuilder fbb(1024 * 256); // may hold several MB of textures
+
+    // Resolve a texture path to an absolute path for reading
+    auto resolveAbs = [&](const std::filesystem::path& p) -> std::filesystem::path {
+        if (p.empty()) return {};
+        if (p.is_absolute()) return p;
+        if (project) return std::filesystem::path(project->root_path()) / p;
+        return p;
+    };
+
+    // Read texture file bytes
+    auto albedoBytes    = read_file_bytes(resolveAbs(mat.albedoTexturePath));
+    auto normalBytes    = read_file_bytes(resolveAbs(mat.normalTexturePath));
+    auto roughnessBytes = read_file_bytes(resolveAbs(mat.roughnessTexturePath));
+    auto metallicBytes  = read_file_bytes(resolveAbs(mat.metallicTexturePath));
+    auto aoBytes        = read_file_bytes(resolveAbs(mat.aoTexturePath));
+
+    // Store just the filename (not full path) so we know what to extract to
+    auto filenameStr = [](const std::filesystem::path& p) -> std::string {
+        if (p.empty()) return {};
+        return p.filename().string();
+    };
+
+    fb::Color4 col(mat.albedoColor.x, mat.albedoColor.y, mat.albedoColor.z, mat.albedoColor.w);
+
+    auto matOffset = fb::CreateMaterialAssetDirect(
+        fbb,
+        name.c_str(),
+        &col,
+        mat.roughness,
+        mat.metallic,
+        filenameStr(mat.albedoTexturePath).c_str(),
+        filenameStr(mat.normalTexturePath).c_str(),
+        filenameStr(mat.roughnessTexturePath).c_str(),
+        filenameStr(mat.metallicTexturePath).c_str(),
+        filenameStr(mat.aoTexturePath).c_str(),
+        albedoBytes.empty()    ? nullptr : &albedoBytes,
+        normalBytes.empty()    ? nullptr : &normalBytes,
+        roughnessBytes.empty() ? nullptr : &roughnessBytes,
+        metallicBytes.empty()  ? nullptr : &metallicBytes,
+        aoBytes.empty()        ? nullptr : &aoBytes
+    );
+    fb::FinishMaterialAssetBuffer(fbb, matOffset);
+
+    // Ensure parent directory exists
+    std::filesystem::create_directories(filePath.parent_path());
+
+    std::ofstream ofs(filePath, std::ios::binary);
+    if (!ofs) return false;
+    ofs.write(reinterpret_cast<const char*>(fbb.GetBufferPointer()), fbb.GetSize());
+    return ofs.good();
+}
+
+bool load_material_from_file(const std::filesystem::path& filePath,
+                             std::string& outName, MaterialData& outData,
+                             const Project* project)
+{
+    namespace fb = NatureOfCraft::Assets;
+
+    std::ifstream ifs(filePath, std::ios::binary | std::ios::ate);
+    if (!ifs) return false;
+    auto size = ifs.tellg();
+    ifs.seekg(0);
+    std::vector<uint8_t> buf(static_cast<size_t>(size));
+    ifs.read(reinterpret_cast<char*>(buf.data()), size);
+    if (!ifs) return false;
+
+    flatbuffers::Verifier verifier(buf.data(), buf.size());
+    if (!fb::VerifyMaterialAssetBuffer(verifier)) return false;
+
+    auto asset = fb::GetMaterialAsset(buf.data());
+    if (!asset) return false;
+
+    outName = asset->name() ? asset->name()->str() : filePath.stem().string();
+    if (auto* c = asset->albedo_color())
+        outData.albedoColor = {c->r(), c->g(), c->b(), c->a()};
+    outData.roughness = asset->roughness();
+    outData.metallic = asset->metallic();
+
+    // Extract embedded textures to project's Assets/Textures/ directory
+    std::filesystem::path texDir;
+    if (project)
+        texDir = std::filesystem::path(project->root_path()) / project->asset_directory() / "Textures";
+
+    auto extractTexture = [&](const ::flatbuffers::String* pathField,
+                              const ::flatbuffers::Vector<uint8_t>* dataField,
+                              std::filesystem::path& outPath) {
+        if (!pathField || pathField->size() == 0) return;
+        std::string filename = pathField->str();
+        outPath = std::filesystem::path(project->asset_directory()) / "Textures" / filename;
+
+        // If embedded data exists, write it to disk
+        if (dataField && dataField->size() > 0 && !texDir.empty())
+        {
+            auto destFile = texDir / filename;
+            if (!std::filesystem::exists(destFile))
+            {
+                std::filesystem::create_directories(texDir);
+                std::ofstream ofs(destFile, std::ios::binary);
+                if (ofs)
+                    ofs.write(reinterpret_cast<const char*>(dataField->data()),
+                              static_cast<std::streamsize>(dataField->size()));
+            }
+        }
+    };
+
+    extractTexture(asset->albedo_texture_path(),    asset->albedo_texture_data(),    outData.albedoTexturePath);
+    extractTexture(asset->normal_texture_path(),    asset->normal_texture_data(),    outData.normalTexturePath);
+    extractTexture(asset->roughness_texture_path(), asset->roughness_texture_data(), outData.roughnessTexturePath);
+    extractTexture(asset->metallic_texture_path(),  asset->metallic_texture_data(),  outData.metallicTexturePath);
+    extractTexture(asset->ao_texture_path(),        asset->ao_texture_data(),        outData.aoTexturePath);
+    return true;
+}
+
+std::vector<std::filesystem::path> scan_material_files(const Project* project)
+{
+    std::vector<std::filesystem::path> result;
+    if (!project) return result;
+    auto root = std::filesystem::path(project->root_path());
+    if (!std::filesystem::exists(root)) return result;
+    for (auto& entry : std::filesystem::recursive_directory_iterator(root))
+    {
+        if (entry.is_regular_file() && entry.path().extension() == ".noc_material")
+            result.push_back(entry.path());
+    }
+    return result;
 }
 
 // ── Import model helper ───────────────────────────────────────────────
@@ -491,6 +642,18 @@ static std::vector<std::filesystem::path> collect_model_texture_load_paths(const
         const std::filesystem::path normalPath = resolve_texture_load_path(mat.normalTexturePath, project);
         if (!normalPath.empty())
             uniqueTexturePaths.insert(normalPath);
+
+        const std::filesystem::path roughnessPath = resolve_texture_load_path(mat.roughnessTexturePath, project);
+        if (!roughnessPath.empty())
+            uniqueTexturePaths.insert(roughnessPath);
+
+        const std::filesystem::path metallicPath = resolve_texture_load_path(mat.metallicTexturePath, project);
+        if (!metallicPath.empty())
+            uniqueTexturePaths.insert(metallicPath);
+
+        const std::filesystem::path aoPath = resolve_texture_load_path(mat.aoTexturePath, project);
+        if (!aoPath.empty())
+            uniqueTexturePaths.insert(aoPath);
     }
 
     return {uniqueTexturePaths.begin(), uniqueTexturePaths.end()};
@@ -644,6 +807,8 @@ static bool import_model(const std::filesystem::path& objPath, AssetManager& ass
             mat.albedoTexturePath = copy_texture_to_project(mat.albedoTexturePath, *project);
             mat.normalTexturePath = copy_texture_to_project(mat.normalTexturePath, *project);
             mat.roughnessTexturePath = copy_texture_to_project(mat.roughnessTexturePath, *project);
+            mat.metallicTexturePath = copy_texture_to_project(mat.metallicTexturePath, *project);
+            mat.aoTexturePath = copy_texture_to_project(mat.aoTexturePath, *project);
         }
 
         std::string modelName = model.name;
@@ -686,8 +851,17 @@ static bool import_model(const std::filesystem::path& objPath, AssetManager& ass
         const std::uint32_t normalTexIdx =
             upload_material_texture(mat.normalTexturePath, "normal", project, assetManager, renderer,
                                     preparedTextureHandles, uploadedTextureIndices);
+        const std::uint32_t roughnessTexIdx =
+            upload_material_texture(mat.roughnessTexturePath, "roughness", project, assetManager, renderer,
+                                    preparedTextureHandles, uploadedTextureIndices);
+        const std::uint32_t metallicTexIdx =
+            upload_material_texture(mat.metallicTexturePath, "metallic", project, assetManager, renderer,
+                                    preparedTextureHandles, uploadedTextureIndices);
+        const std::uint32_t aoTexIdx =
+            upload_material_texture(mat.aoTexturePath, "ao", project, assetManager, renderer,
+                                    preparedTextureHandles, uploadedTextureIndices);
 
-        auto matResult = renderer.upload_material(albedoTexIdx, normalTexIdx);
+        auto matResult = renderer.upload_material(albedoTexIdx, normalTexIdx, roughnessTexIdx, metallicTexIdx, aoTexIdx);
         if (matResult)
             gpuMaterialIndices.push_back(matResult.value());
         else
@@ -825,8 +999,17 @@ static void reload_level_assets(AssetManager& assetManager, IRenderer& renderer,
             const std::uint32_t normalTexIdx =
                 upload_material_texture(mat.normalTexturePath, "normal", project, assetManager, renderer,
                                         preparedTextureHandles, uploadedTextureIndices);
+            const std::uint32_t roughnessTexIdx =
+                upload_material_texture(mat.roughnessTexturePath, "roughness", project, assetManager, renderer,
+                                        preparedTextureHandles, uploadedTextureIndices);
+            const std::uint32_t metallicTexIdx =
+                upload_material_texture(mat.metallicTexturePath, "metallic", project, assetManager, renderer,
+                                        preparedTextureHandles, uploadedTextureIndices);
+            const std::uint32_t aoTexIdx =
+                upload_material_texture(mat.aoTexturePath, "ao", project, assetManager, renderer,
+                                        preparedTextureHandles, uploadedTextureIndices);
 
-            auto matResult = renderer.upload_material(albedoTexIdx, normalTexIdx);
+            auto matResult = renderer.upload_material(albedoTexIdx, normalTexIdx, roughnessTexIdx, metallicTexIdx, aoTexIdx);
             if (matResult)
                 gpuMaterialIndices.push_back(matResult.value());
             else
@@ -977,7 +1160,19 @@ int main()
     bool showSceneHierarchyPanel = true;
     bool showInspectorPanel = true;
     bool showAssetManagerPanel = true;
+    bool showMaterialEditorPanel = true;
     bool showDetailedMetrics = false;
+
+    // ── Material Editor state ─────────────────────────────────────────
+    struct EditorMaterial
+    {
+        std::string name;
+        MaterialData data;
+        std::int32_t gpuIndex{-1}; // -1 = not yet uploaded
+    };
+    std::vector<EditorMaterial> editorMaterials;
+    std::int32_t selectedMaterialIdx{-1};
+    std::vector<std::string> projectTexturePathsCache; // cached list of project image files
 
     struct GraphicsSettingsDraft
     {
@@ -1099,6 +1294,84 @@ int main()
         // Re-import all referenced models so entities have valid GPU indices
         renderer.wait_idle();
         reload_level_assets(assetManager, renderer, world, statusMessage, project.get());
+
+        // Auto-load saved materials and assign to meshes by name
+        {
+            auto matFiles = scan_material_files(project.get());
+            for (const auto& mf : matFiles)
+            {
+                std::string matName;
+                MaterialData matData;
+                if (!load_material_from_file(mf, matName, matData, project.get())) continue;
+
+                // Skip if already exists
+                bool exists = false;
+                for (const auto& em : editorMaterials)
+                    if (em.name == matName) { exists = true; break; }
+                if (exists) continue;
+
+                EditorMaterial newMat;
+                newMat.name = matName;
+                newMat.data = std::move(matData);
+                editorMaterials.push_back(std::move(newMat));
+            }
+
+            // Upload materials that are assigned to meshes (lazy loading)
+            auto meshView = world.registry().view<MeshComponent>();
+            for (auto& em : editorMaterials)
+            {
+                if (em.gpuIndex >= 0) continue; // already uploaded
+
+                // Check if any mesh references this material by name
+                bool isReferenced = false;
+                for (auto entity : meshView)
+                {
+                    const auto& mc = meshView.get<MeshComponent>(entity);
+                    if (mc.materialName == em.name) { isReferenced = true; break; }
+                }
+                if (!isReferenced) continue; // lazy: don't upload unused materials
+
+                // Upload textures and material to GPU
+                auto uploadTex = [&](const std::filesystem::path& relPath) -> std::uint32_t {
+                    if (relPath.empty()) return 0;
+                    std::filesystem::path absPath = relPath;
+                    if (relPath.is_relative())
+                        absPath = std::filesystem::path(project->root_path()) / relPath;
+                    if (!std::filesystem::exists(absPath)) return 0;
+                    auto texHandle = assetManager.load_texture(absPath);
+                    if (!texHandle) return 0;
+                    auto texResult = renderer.upload_texture(*texHandle);
+                    if (!texResult) return 0;
+                    return texResult.value();
+                };
+
+                std::uint32_t albedoIdx    = uploadTex(em.data.albedoTexturePath);
+                std::uint32_t normalIdx    = uploadTex(em.data.normalTexturePath);
+                std::uint32_t roughnessIdx = uploadTex(em.data.roughnessTexturePath);
+                std::uint32_t metallicIdx  = uploadTex(em.data.metallicTexturePath);
+                std::uint32_t aoIdx        = uploadTex(em.data.aoTexturePath);
+
+                auto matResult = renderer.upload_material(albedoIdx, normalIdx, roughnessIdx, metallicIdx, aoIdx);
+                if (matResult)
+                    em.gpuIndex = static_cast<std::int32_t>(matResult.value());
+            }
+
+            // Resolve material names to GPU indices on all mesh entities
+            for (auto entity : meshView)
+            {
+                auto& mc = meshView.get<MeshComponent>(entity);
+                if (mc.materialName.empty()) continue;
+                for (const auto& em : editorMaterials)
+                {
+                    if (em.name == mc.materialName && em.gpuIndex >= 0)
+                    {
+                        mc.materialIndex = em.gpuIndex;
+                        break;
+                    }
+                }
+            }
+            world.mark_renderables_dirty();
+        }
 
         entt::entity camEntity = world.get_active_camera();
         if (camEntity != entt::null)
@@ -1363,6 +1636,7 @@ int main()
                         ImGui::MenuItem("Scene Hierarchy", nullptr, &showSceneHierarchyPanel);
                         ImGui::MenuItem("Inspector", nullptr, &showInspectorPanel);
                         ImGui::MenuItem("Asset Manager", nullptr, &showAssetManagerPanel);
+                        ImGui::MenuItem("Material Editor", nullptr, &showMaterialEditorPanel);
                         ImGui::EndMenu();
                     }
 
@@ -2112,6 +2386,235 @@ int main()
                     ImGui::End();
                 }
 
+                // --- Material Editor ---
+                if (showMaterialEditorPanel)
+                {
+                    if (ImGui::Begin("Material Editor", &showMaterialEditorPanel))
+                    {
+                        // Rebuild project texture paths cache when needed
+                        if (projectTexturePathsCache.empty() && project)
+                        {
+                            const auto& dir = project->root_path();
+                            const std::vector<std::string> imgExts = {".png", ".jpg", ".jpeg", ".tga", ".bmp"};
+                            for (auto& entry : std::filesystem::recursive_directory_iterator(dir))
+                            {
+                                if (!entry.is_regular_file()) continue;
+                                std::string ext = to_lower_copy(entry.path().extension().string());
+                                if (std::find(imgExts.begin(), imgExts.end(), ext) != imgExts.end())
+                                    projectTexturePathsCache.push_back(
+                                        std::filesystem::relative(entry.path(), dir).string());
+                            }
+                            std::sort(projectTexturePathsCache.begin(), projectTexturePathsCache.end());
+                        }
+
+                        if (ImGui::Button("+ New Material"))
+                        {
+                            EditorMaterial newMat;
+                            newMat.name = fmt::format("Material_{}", editorMaterials.size());
+                            editorMaterials.push_back(std::move(newMat));
+                            selectedMaterialIdx = static_cast<std::int32_t>(editorMaterials.size() - 1);
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Refresh Textures"))
+                            projectTexturePathsCache.clear();
+
+                        ImGui::Separator();
+
+                        // Material list
+                        for (std::int32_t i = 0; i < static_cast<std::int32_t>(editorMaterials.size()); ++i)
+                        {
+                            bool isSelected = (selectedMaterialIdx == i);
+                            std::string label = editorMaterials[i].name;
+                            if (editorMaterials[i].gpuIndex >= 0)
+                                label += fmt::format(" [GPU:{}]", editorMaterials[i].gpuIndex);
+                            else
+                                label += " [not uploaded]";
+
+                            if (ImGui::Selectable(label.c_str(), isSelected))
+                                selectedMaterialIdx = i;
+                        }
+
+                        ImGui::Separator();
+
+                        // Edit selected material
+                        if (selectedMaterialIdx >= 0 && selectedMaterialIdx < static_cast<std::int32_t>(editorMaterials.size()))
+                        {
+                            auto& mat = editorMaterials[selectedMaterialIdx];
+
+                            // Editable name
+                            char nameBuf[128];
+                            strncpy(nameBuf, mat.name.c_str(), sizeof(nameBuf) - 1);
+                            nameBuf[sizeof(nameBuf) - 1] = '\0';
+                            if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
+                                mat.name = nameBuf;
+
+                            ImGui::ColorEdit4("Albedo Color", &mat.data.albedoColor.x);
+                            ImGui::SliderFloat("Roughness", &mat.data.roughness, 0.0f, 1.0f);
+                            ImGui::SliderFloat("Metallic", &mat.data.metallic, 0.0f, 1.0f);
+
+                            ImGui::Separator();
+                            ImGui::Text("Texture Slots:");
+
+                            // Helper lambda to draw a texture slot combo
+                            auto drawTextureSlot = [&](const char* label, std::filesystem::path& texPath) {
+                                std::string current = texPath.empty() ? "(none)" : texPath.string();
+                                if (ImGui::BeginCombo(label, current.c_str()))
+                                {
+                                    if (ImGui::Selectable("(none)", texPath.empty()))
+                                        texPath.clear();
+                                    for (const auto& tp : projectTexturePathsCache)
+                                    {
+                                        bool isSel = (texPath.string() == tp);
+                                        if (ImGui::Selectable(tp.c_str(), isSel))
+                                            texPath = tp;
+                                        if (isSel)
+                                            ImGui::SetItemDefaultFocus();
+                                    }
+                                    ImGui::EndCombo();
+                                }
+                            };
+
+                            drawTextureSlot("Albedo##tex_albedo",       mat.data.albedoTexturePath);
+                            drawTextureSlot("Normal##tex_normal",       mat.data.normalTexturePath);
+                            drawTextureSlot("Roughness##tex_roughness", mat.data.roughnessTexturePath);
+                            drawTextureSlot("Metallic##tex_metallic",   mat.data.metallicTexturePath);
+                            drawTextureSlot("AO##tex_ao",               mat.data.aoTexturePath);
+
+                            ImGui::Separator();
+
+                            if (ImGui::Button("Apply (Upload to GPU)"))
+                            {
+                                // Upload each texture that has a path
+                                auto uploadTex = [&](const std::filesystem::path& relPath) -> std::uint32_t {
+                                    if (relPath.empty()) return 0; // default texture index
+                                    std::filesystem::path absPath = relPath;
+                                    if (project && relPath.is_relative())
+                                        absPath = project->root_path() / relPath;
+                                    if (!std::filesystem::exists(absPath)) return 0;
+
+                                    auto texHandle = assetManager.load_texture(absPath);
+                                    if (!texHandle) return 0;
+                                    auto texResult = renderer.upload_texture(*texHandle);
+                                    if (!texResult) return 0;
+                                    return texResult.value();
+                                };
+
+                                std::uint32_t albedoIdx    = uploadTex(mat.data.albedoTexturePath);
+                                std::uint32_t normalIdx    = uploadTex(mat.data.normalTexturePath);
+                                std::uint32_t roughnessIdx = uploadTex(mat.data.roughnessTexturePath);
+                                std::uint32_t metallicIdx  = uploadTex(mat.data.metallicTexturePath);
+                                std::uint32_t aoIdx        = uploadTex(mat.data.aoTexturePath);
+
+                                auto matResult = renderer.upload_material(
+                                    albedoIdx, normalIdx, roughnessIdx, metallicIdx, aoIdx);
+                                if (matResult)
+                                {
+                                    mat.gpuIndex = static_cast<std::int32_t>(matResult.value());
+                                    statusMessage = {fmt::format("Material '{}' uploaded (GPU index {})",
+                                                     mat.name, mat.gpuIndex), false, 3.0f};
+                                }
+                                else
+                                {
+                                    statusMessage = {fmt::format("Failed to upload material '{}': {}",
+                                                     mat.name, matResult.error().message), true, 5.0f};
+                                }
+                            }
+
+                            if (mat.gpuIndex >= 0)
+                            {
+                                ImGui::SameLine();
+                                ImGui::TextDisabled("GPU Index: %d", mat.gpuIndex);
+                            }
+
+                            ImGui::Separator();
+
+                            // Save material to disk
+                            if (ImGui::Button("Save to Disk") && project)
+                            {
+                                // Copy referenced textures into project if they're outside
+                                auto copyIfNeeded = [&](std::filesystem::path& texPath) {
+                                    if (texPath.empty()) return;
+                                    std::filesystem::path absPath = texPath;
+                                    if (texPath.is_relative())
+                                        absPath = std::filesystem::path(project->root_path()) / texPath;
+                                    if (!std::filesystem::exists(absPath)) return;
+
+                                    // Copy into Assets/Textures/ if not already in project
+                                    auto projectRoot = std::filesystem::path(project->root_path());
+                                    auto canonical = std::filesystem::weakly_canonical(absPath);
+                                    auto canonicalRoot = std::filesystem::weakly_canonical(projectRoot);
+                                    // Check if file is already under project root
+                                    auto rel = std::filesystem::relative(canonical, canonicalRoot);
+                                    if (rel.string().find("..") == 0)
+                                    {
+                                        // Outside project — copy in
+                                        auto dst = copy_texture_to_project(absPath, *project);
+                                        if (!dst.empty())
+                                            texPath = dst;
+                                    }
+                                };
+                                copyIfNeeded(mat.data.albedoTexturePath);
+                                copyIfNeeded(mat.data.normalTexturePath);
+                                copyIfNeeded(mat.data.roughnessTexturePath);
+                                copyIfNeeded(mat.data.metallicTexturePath);
+                                copyIfNeeded(mat.data.aoTexturePath);
+
+                                auto matDir = std::filesystem::path(project->root_path())
+                                              / project->asset_directory() / "Materials";
+                                auto matFile = matDir / (mat.name + ".noc_material");
+                                if (save_material_to_file(mat.data, mat.name, matFile, project.get()))
+                                {
+                                    statusMessage = {fmt::format("Material '{}' saved to {}",
+                                                     mat.name, matFile.filename().string()), false, 3.0f};
+                                    projectAssetsDirty = true;
+                                }
+                                else
+                                {
+                                    statusMessage = {fmt::format("Failed to save material '{}'", mat.name), true, 5.0f};
+                                }
+                            }
+                        }
+                        else
+                        {
+                            ImGui::TextDisabled("Create or select a material to edit.");
+                        }
+
+                        ImGui::Separator();
+
+                        // Load materials from project
+                        if (ImGui::Button("Load Materials from Disk") && project)
+                        {
+                            auto matFiles = scan_material_files(project.get());
+                            int loaded = 0;
+                            for (const auto& mf : matFiles)
+                            {
+                                // Skip if already loaded by name
+                                std::string checkName;
+                                MaterialData checkData;
+                                if (!load_material_from_file(mf, checkName, checkData, project.get())) continue;
+
+                                bool alreadyExists = false;
+                                for (const auto& em : editorMaterials)
+                                {
+                                    if (em.name == checkName) { alreadyExists = true; break; }
+                                }
+                                if (alreadyExists) continue;
+
+                                EditorMaterial newMat;
+                                newMat.name = checkName;
+                                newMat.data = std::move(checkData);
+                                editorMaterials.push_back(std::move(newMat));
+                                ++loaded;
+                            }
+                            if (loaded > 0)
+                                statusMessage = {fmt::format("Loaded {} material(s) from disk", loaded), false, 3.0f};
+                            else
+                                statusMessage = {"No new materials found on disk.", false, 2.0f};
+                        }
+                    }
+                    ImGui::End();
+                }
+
                 // --- Scene Hierarchy ---
                 if (showSceneHierarchyPanel)
                 {
@@ -2134,13 +2637,44 @@ int main()
                             const auto& nameComp = world.registry().get<NameComponent>(selectedEntity);
                             ImGui::Text("Entity: %s", nameComp.name.c_str());
 
-                            if (const auto* mc = world.registry().try_get<MeshComponent>(selectedEntity))
+                            if (auto* mc = world.registry().try_get<MeshComponent>(selectedEntity))
                             {
                                 if (mc->meshIndex >= 0)
                                     ImGui::Text("Mesh Index: %d", mc->meshIndex);
-                                ImGui::Text("Material Index: %d", mc->materialIndex);
                                 if (!mc->assetPath.empty())
                                     ImGui::TextDisabled("Asset: %s", mc->assetPath.c_str());
+
+                                // Material assignment dropdown
+                                {
+                                    // Build label for current material
+                                    std::string currentMatLabel = fmt::format("[Default: {}]", mc->materialIndex);
+                                    for (const auto& em : editorMaterials)
+                                    {
+                                        if (em.gpuIndex >= 0 && em.gpuIndex == mc->materialIndex)
+                                        {
+                                            currentMatLabel = em.name;
+                                            break;
+                                        }
+                                    }
+
+                                    if (ImGui::BeginCombo("Material", currentMatLabel.c_str()))
+                                    {
+                                        for (const auto& em : editorMaterials)
+                                        {
+                                            if (em.gpuIndex < 0) continue; // not uploaded yet
+                                            bool isSel = (mc->materialIndex == em.gpuIndex);
+                                            if (ImGui::Selectable(em.name.c_str(), isSel))
+                                            {
+                                                mc->materialIndex = em.gpuIndex;
+                                                mc->materialName = em.name;
+                                                world.mark_renderables_dirty();
+                                                if (level) level->mark_dirty();
+                                            }
+                                            if (isSel) ImGui::SetItemDefaultFocus();
+                                        }
+                                        ImGui::EndCombo();
+                                    }
+                                }
                             }
 
                         if (world.registry().any_of<CameraComponent>(selectedEntity))

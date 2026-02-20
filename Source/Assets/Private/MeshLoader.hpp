@@ -22,8 +22,14 @@ struct MeshLoader
     /// Falls back to OBJ parsing, then writes the cache.
     result_type operator()(const std::filesystem::path& path) const;
 
+    /// Load from either OBJ or FBX, returning the parsed MeshData (no caching).
+    static Result<std::shared_ptr<MeshData>> parse_mesh(const std::filesystem::path& path);
+
     /// Parse an OBJ file directly into MeshData (no caching).
     static Result<std::shared_ptr<MeshData>> parse_obj(const std::filesystem::path& path);
+
+    /// Parse an FBX file directly into MeshData (no caching).
+    static Result<std::shared_ptr<MeshData>> parse_fbx(const std::filesystem::path& path);
 
     /// Serialize MeshData to a FlatBuffer binary cache file.
     static Result<> write_cache(const MeshData& mesh, const std::filesystem::path& cachePath);

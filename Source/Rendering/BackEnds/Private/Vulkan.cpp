@@ -1125,6 +1125,45 @@ Result<> Vulkan::create_default_textures()
         return make_error(normalResult.error());
     m_defaultNormalTextureIndex = normalResult.value();
 
+    // Default roughness: 1x1 white pixel (roughness = 1.0)
+    TextureData whiteRoughness{};
+    whiteRoughness.name = "default_roughness";
+    whiteRoughness.width = 1;
+    whiteRoughness.height = 1;
+    whiteRoughness.channels = 4;
+    whiteRoughness.pixels = {255, 255, 255, 255};
+
+    auto roughnessResult = upload_texture(whiteRoughness);
+    if (!roughnessResult)
+        return make_error(roughnessResult.error());
+    m_defaultRoughnessTextureIndex = roughnessResult.value();
+
+    // Default metallic: 1x1 black pixel (metallic = 0.0)
+    TextureData blackMetallic{};
+    blackMetallic.name = "default_metallic";
+    blackMetallic.width = 1;
+    blackMetallic.height = 1;
+    blackMetallic.channels = 4;
+    blackMetallic.pixels = {0, 0, 0, 255};
+
+    auto metallicResult = upload_texture(blackMetallic);
+    if (!metallicResult)
+        return make_error(metallicResult.error());
+    m_defaultMetallicTextureIndex = metallicResult.value();
+
+    // Default AO: 1x1 white pixel (fully lit, no occlusion)
+    TextureData whiteAO{};
+    whiteAO.name = "default_ao";
+    whiteAO.width = 1;
+    whiteAO.height = 1;
+    whiteAO.channels = 4;
+    whiteAO.pixels = {255, 255, 255, 255};
+
+    auto aoResult = upload_texture(whiteAO);
+    if (!aoResult)
+        return make_error(aoResult.error());
+    m_defaultAOTextureIndex = aoResult.value();
+
     return {};
 }
 
@@ -1246,12 +1285,12 @@ Result<> Vulkan::create_descriptor_pool()
 {
     VkDevice device = m_vulkanDevice.get_device();
 
-    // Pool sized for up to 256 materials, each needing 2 combined image samplers
+    // Pool sized for up to 256 materials, each needing 5 combined image samplers
     constexpr uint32_t maxMaterials = 256;
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = maxMaterials * 2;
+    poolSize.descriptorCount = maxMaterials * 5;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1269,21 +1308,33 @@ Result<> Vulkan::create_descriptor_pool()
 
 Result<> Vulkan::create_default_material()
 {
-    auto result = upload_material(m_defaultAlbedoTextureIndex, m_defaultNormalTextureIndex);
+    auto result = upload_material(m_defaultAlbedoTextureIndex, m_defaultNormalTextureIndex,
+                                  m_defaultRoughnessTextureIndex, m_defaultMetallicTextureIndex,
+                                  m_defaultAOTextureIndex);
     if (!result)
         return make_error(result.error());
     m_defaultMaterialIndex = result.value();
     return {};
 }
 
-Result<uint32_t> Vulkan::upload_material(uint32_t albedoTextureIndex, uint32_t normalTextureIndex)
+Result<uint32_t> Vulkan::upload_material(uint32_t albedoTextureIndex, uint32_t normalTextureIndex,
+                                          uint32_t roughnessTextureIndex, uint32_t metallicTextureIndex,
+                                          uint32_t aoTextureIndex)
 {
-    if (albedoTextureIndex >= m_textures.size() || normalTextureIndex >= m_textures.size())
+    if (albedoTextureIndex >= m_textures.size() || normalTextureIndex >= m_textures.size() ||
+        roughnessTextureIndex >= m_textures.size() || metallicTextureIndex >= m_textures.size() ||
+        aoTextureIndex >= m_textures.size())
         return make_error("Texture index out of range", ErrorCode::AssetInvalidData);
 
-    const uint64_t materialKey = (static_cast<uint64_t>(albedoTextureIndex) << 32U) |
-                                 static_cast<uint64_t>(normalTextureIndex);
-    if (const auto it = m_materialLookup.find(materialKey); it != m_materialLookup.end())
+    // Simple hash combining all 5 indices
+    std::size_t materialKey = 0;
+    materialKey ^= std::hash<uint32_t>{}(albedoTextureIndex) + 0x9e3779b9 + (materialKey << 6) + (materialKey >> 2);
+    materialKey ^= std::hash<uint32_t>{}(normalTextureIndex) + 0x9e3779b9 + (materialKey << 6) + (materialKey >> 2);
+    materialKey ^= std::hash<uint32_t>{}(roughnessTextureIndex) + 0x9e3779b9 + (materialKey << 6) + (materialKey >> 2);
+    materialKey ^= std::hash<uint32_t>{}(metallicTextureIndex) + 0x9e3779b9 + (materialKey << 6) + (materialKey >> 2);
+    materialKey ^= std::hash<uint32_t>{}(aoTextureIndex) + 0x9e3779b9 + (materialKey << 6) + (materialKey >> 2);
+    const uint64_t key64 = static_cast<uint64_t>(materialKey);
+    if (const auto it = m_materialLookup.find(key64); it != m_materialLookup.end())
         return it->second;
 
     VkDevice device = m_vulkanDevice.get_device();
@@ -1302,38 +1353,32 @@ Result<uint32_t> Vulkan::upload_material(uint32_t albedoTextureIndex, uint32_t n
         return make_error("Failed to allocate descriptor set for material", ErrorCode::VulkanTextureUploadFailed);
     }
 
-    // Write descriptor set: binding 0 = albedo, binding 1 = normal
-    std::array<VkDescriptorImageInfo, 2> imageInfos{};
-    imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfos[0].imageView = m_textures[albedoTextureIndex].imageView;
-    imageInfos[0].sampler = m_sampler;
+    // Write descriptor set: binding 0=albedo, 1=normal, 2=roughness, 3=metallic, 4=AO
+    const uint32_t texIndices[5] = { albedoTextureIndex, normalTextureIndex, roughnessTextureIndex,
+                                     metallicTextureIndex, aoTextureIndex };
+    std::array<VkDescriptorImageInfo, 5> imageInfos{};
+    std::array<VkWriteDescriptorSet, 5> descriptorWrites{};
 
-    imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfos[1].imageView = m_textures[normalTextureIndex].imageView;
-    imageInfos[1].sampler = m_sampler;
+    for (uint32_t i = 0; i < 5; ++i)
+    {
+        imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfos[i].imageView = m_textures[texIndices[i]].imageView;
+        imageInfos[i].sampler = m_sampler;
 
-    std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
-    descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrites[0].dstSet = material.descriptorSet;
-    descriptorWrites[0].dstBinding = 0;
-    descriptorWrites[0].dstArrayElement = 0;
-    descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    descriptorWrites[0].descriptorCount = 1;
-    descriptorWrites[0].pImageInfo = &imageInfos[0];
-
-    descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrites[1].dstSet = material.descriptorSet;
-    descriptorWrites[1].dstBinding = 1;
-    descriptorWrites[1].dstArrayElement = 0;
-    descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    descriptorWrites[1].descriptorCount = 1;
-    descriptorWrites[1].pImageInfo = &imageInfos[1];
+        descriptorWrites[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrites[i].dstSet = material.descriptorSet;
+        descriptorWrites[i].dstBinding = i;
+        descriptorWrites[i].dstArrayElement = 0;
+        descriptorWrites[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        descriptorWrites[i].descriptorCount = 1;
+        descriptorWrites[i].pImageInfo = &imageInfos[i];
+    }
 
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 
     uint32_t materialIndex = static_cast<uint32_t>(m_materials.size());
     m_materials.push_back(material);
-    m_materialLookup.emplace(materialKey, materialIndex);
+    m_materialLookup.emplace(key64, materialIndex);
     return materialIndex;
 }
 

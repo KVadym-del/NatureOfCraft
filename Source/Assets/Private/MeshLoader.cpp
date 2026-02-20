@@ -11,8 +11,10 @@
 
 #include <MeshAsset_generated.h>
 #include <flatbuffers/flatbuffers.h>
+#include "../../ThirdParty/ufbx/ufbx.h"
 #include <fmt/core.h>
 #include <rapidobj/rapidobj.hpp>
+#include <taskflow/taskflow.hpp>
 
 namespace std
 {
@@ -60,7 +62,7 @@ MeshLoader::result_type MeshLoader::operator()(const std::filesystem::path& path
         }
     }
 
-    auto parsed = parse_obj(path);
+    auto parsed = parse_mesh(path);
     if (!parsed)
     {
         fmt::print("ERROR: Failed to parse mesh: {}\n", parsed.error().message);
@@ -78,6 +80,13 @@ MeshLoader::result_type MeshLoader::operator()(const std::filesystem::path& path
     }
 
     return parsed.value();
+}
+
+Result<std::shared_ptr<MeshData>> MeshLoader::parse_mesh(const std::filesystem::path& path)
+{
+    if (path.extension() == ".fbx")
+        return parse_fbx(path);
+    return parse_obj(path);
 }
 
 Result<std::shared_ptr<MeshData>> MeshLoader::parse_obj(const std::filesystem::path& path)
@@ -181,6 +190,184 @@ Result<std::shared_ptr<MeshData>> MeshLoader::parse_obj(const std::filesystem::p
     mesh->indices = std::move(indices);
     mesh->compute_bounds();
 
+    {
+        auto& verts = mesh->vertices;
+        const auto& idxs = mesh->indices;
+        const size_t vertCount = verts.size();
+
+        std::vector<XMFLOAT3> tanAccum(vertCount, {0.0f, 0.0f, 0.0f});
+        std::vector<XMFLOAT3> bitanAccum(vertCount, {0.0f, 0.0f, 0.0f});
+
+        for (size_t i = 0; i + 2 < idxs.size(); i += 3)
+        {
+            std::uint32_t i0 = idxs[i + 0];
+            std::uint32_t i1 = idxs[i + 1];
+            std::uint32_t i2 = idxs[i + 2];
+            const auto& v0 = verts[i0];
+            const auto& v1 = verts[i1];
+            const auto& v2 = verts[i2];
+
+            float dx1 = v1.pos.x - v0.pos.x;
+            float dy1 = v1.pos.y - v0.pos.y;
+            float dz1 = v1.pos.z - v0.pos.z;
+            float dx2 = v2.pos.x - v0.pos.x;
+            float dy2 = v2.pos.y - v0.pos.y;
+            float dz2 = v2.pos.z - v0.pos.z;
+
+            float du1 = v1.texCoord.x - v0.texCoord.x;
+            float dv1 = v1.texCoord.y - v0.texCoord.y;
+            float du2 = v2.texCoord.x - v0.texCoord.x;
+            float dv2 = v2.texCoord.y - v0.texCoord.y;
+
+            float det = du1 * dv2 - du2 * dv1;
+            if (std::abs(det) < 1e-8f)
+                continue;
+
+            float invDet = 1.0f / det;
+
+            float tx = (dv2 * dx1 - dv1 * dx2) * invDet;
+            float ty = (dv2 * dy1 - dv1 * dy2) * invDet;
+            float tz = (dv2 * dz1 - dv1 * dz2) * invDet;
+
+            float bx = (du1 * dx2 - du2 * dx1) * invDet;
+            float by = (du1 * dy2 - du2 * dy1) * invDet;
+            float bz = (du1 * dz2 - du2 * dz1) * invDet;
+
+            for (std::uint32_t idx : {i0, i1, i2})
+            {
+                tanAccum[idx].x += tx;
+                tanAccum[idx].y += ty;
+                tanAccum[idx].z += tz;
+                bitanAccum[idx].x += bx;
+                bitanAccum[idx].y += by;
+                bitanAccum[idx].z += bz;
+            }
+        }
+
+        for (size_t i = 0; i < vertCount; ++i)
+        {
+            XMVECTOR n = XMLoadFloat3(&verts[i].normal);
+            XMVECTOR t = XMLoadFloat3(&tanAccum[i]);
+            XMVECTOR b = XMLoadFloat3(&bitanAccum[i]);
+
+            XMVECTOR nDotT = XMVector3Dot(n, t);
+            XMVECTOR tOrtho = XMVector3Normalize(XMVectorSubtract(t, XMVectorMultiply(n, nDotT)));
+
+            if (XMVectorGetX(XMVector3Length(t)) < 1e-8f)
+            {
+                XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+                if (std::abs(XMVectorGetX(XMVector3Dot(n, up))) > 0.99f)
+                    up = XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f);
+                tOrtho = XMVector3Normalize(XMVector3Cross(n, up));
+            }
+
+            float handedness = (XMVectorGetX(XMVector3Dot(XMVector3Cross(n, tOrtho), b)) < 0.0f) ? -1.0f : 1.0f;
+
+            XMFLOAT3 tResult;
+            XMStoreFloat3(&tResult, tOrtho);
+            verts[i].tangent = {tResult.x, tResult.y, tResult.z, handedness};
+        }
+    }
+
+    return mesh;
+}
+
+Result<std::shared_ptr<MeshData>> MeshLoader::parse_fbx(const std::filesystem::path& path)
+{
+    if (!std::filesystem::exists(path))
+        return make_error(fmt::format("File not found: {}", path.string()), ErrorCode::AssetFileNotFound);
+
+    ufbx_load_opts opts{};
+    opts.target_axes = ufbx_axes_right_handed_y_up; // Adjust depending on your engine coordinates
+    opts.target_unit_meters = 1.0f;
+    opts.generate_missing_normals = true;
+
+    ufbx_error error;
+    ufbx_scene* scene = ufbx_load_file(path.string().c_str(), &opts, &error);
+    if (!scene)
+    {
+        return make_error(fmt::format("Failed to parse FBX: {}", error.description.data), ErrorCode::AssetParsingFailed);
+    }
+
+    std::vector<Vertex> vertices{};
+    std::vector<std::uint32_t> indices{};
+    std::unordered_map<Vertex, std::uint32_t> uniqueVertices{};
+
+    auto addVertex = [&](const Vertex& vertex) {
+        if (uniqueVertices.count(vertex) == 0)
+        {
+            uniqueVertices[vertex] = static_cast<std::uint32_t>(vertices.size());
+            vertices.push_back(vertex);
+        }
+        indices.push_back(uniqueVertices[vertex]);
+    };
+
+    for (size_t nodeIdx = 0; nodeIdx < scene->nodes.count; ++nodeIdx)
+    {
+        ufbx_node* node = scene->nodes.data[nodeIdx];
+        if (!node->mesh)
+            continue;
+
+        ufbx_mesh* mesh = node->mesh;
+
+        std::vector<uint32_t> triIndices(mesh->max_face_triangles * 3);
+
+        for (size_t faceIdx = 0; faceIdx < mesh->faces.count; ++faceIdx)
+        {
+            ufbx_face face = mesh->faces.data[faceIdx];
+            uint32_t numTris = ufbx_triangulate_face(triIndices.data(), triIndices.size(), mesh, face);
+            
+            for (size_t i = 0; i < numTris * 3; ++i)
+            {
+                uint32_t fbxi = triIndices[i];
+                Vertex v{};
+
+                ufbx_vec3 pos = ufbx_get_vertex_vec3(&mesh->vertex_position, fbxi);
+                pos = ufbx_transform_position(&node->geometry_to_world, pos);
+                v.pos = { (float)pos.x, (float)pos.y, (float)pos.z };
+
+                if (mesh->vertex_normal.exists)
+                {
+                    ufbx_vec3 normal = ufbx_get_vertex_vec3(&mesh->vertex_normal, fbxi);
+                    ufbx_matrix normal_matrix = ufbx_matrix_for_normals(&node->geometry_to_world);
+                    ufbx_vec3 world_normal = ufbx_transform_direction(&normal_matrix, normal);
+                    float len = std::sqrt(world_normal.x * world_normal.x + world_normal.y * world_normal.y + world_normal.z * world_normal.z);
+                    if (len > 0.0001f) {
+                        v.normal = { (float)(world_normal.x / len), (float)(world_normal.y / len), (float)(world_normal.z / len) };
+                    } else {
+                        v.normal = {0.0f, 1.0f, 0.0f};
+                    }
+                }
+                else
+                {
+                    v.normal = {0.0f, 1.0f, 0.0f};
+                }
+
+                if (mesh->vertex_uv.exists)
+                {
+                     ufbx_vec2 uv = ufbx_get_vertex_vec2(&mesh->vertex_uv, fbxi);
+                     v.texCoord = { (float)uv.x, 1.0f - (float)uv.y };
+                }
+
+                addVertex(v);
+            }
+        }
+    }
+
+    ufbx_retain_scene(scene); // Actually we should free it!
+    ufbx_free_scene(scene);
+
+    if (vertices.empty())
+        return make_error("Model has no valid vertices", ErrorCode::AssetInvalidData);
+
+    auto mesh = std::make_shared<MeshData>();
+    mesh->name = path.stem().string();
+    mesh->sourcePath = path;
+    mesh->vertices = std::move(vertices);
+    mesh->indices = std::move(indices);
+    mesh->compute_bounds();
+
+    // Re-use tangent calculation
     {
         auto& verts = mesh->vertices;
         const auto& idxs = mesh->indices;

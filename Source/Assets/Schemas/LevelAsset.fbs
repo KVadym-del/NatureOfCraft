@@ -29,6 +29,7 @@ table MeshComponentData {
     mesh_index: int32 = -1;
     material_index: int32 = 0;
     asset_path: string;
+    material_name: string;
 }
 
 table CameraComponentData {

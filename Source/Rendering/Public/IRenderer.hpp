@@ -40,8 +40,10 @@ class NOC_EXPORT IRenderer
     virtual Result<uint32_t> upload_texture(const TextureData& textureData) = 0;
 
     /// Create a GPU material from texture indices. Returns an opaque material index.
-    /// albedoTextureIndex and normalTextureIndex must be valid indices from upload_texture().
-    virtual Result<uint32_t> upload_material(uint32_t albedoTextureIndex, uint32_t normalTextureIndex) = 0;
+    /// Texture indices must be valid indices from upload_texture().
+    virtual Result<uint32_t> upload_material(uint32_t albedoTextureIndex, uint32_t normalTextureIndex,
+                                             uint32_t roughnessTextureIndex, uint32_t metallicTextureIndex,
+                                             uint32_t aoTextureIndex) = 0;
 
     /// Set the view and projection matrices for this frame.
     virtual void set_view_projection(const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& proj) noexcept = 0;

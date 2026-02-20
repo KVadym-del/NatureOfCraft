@@ -87,6 +87,7 @@ struct MeshComponent
     int32_t meshIndex{-1};
     int32_t materialIndex{0};
     std::string assetPath; // original asset path, used for serialization
+    std::string materialName; // name of the assigned editor material
 };
 
 /// Camera component. The entity with isActive=true is the rendering camera.

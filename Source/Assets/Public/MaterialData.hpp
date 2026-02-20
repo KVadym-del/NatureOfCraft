@@ -28,6 +28,10 @@ struct NOC_EXPORT MaterialData
     std::filesystem::path normalTexturePath{};
     /// Optional roughness texture path.
     std::filesystem::path roughnessTexturePath{};
+    /// Optional metallic texture path.
+    std::filesystem::path metallicTexturePath{};
+    /// Optional ambient occlusion texture path.
+    std::filesystem::path aoTexturePath{};
 };
 
 NOC_RESTORE_DLL_WARNINGS
