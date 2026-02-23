@@ -1179,6 +1179,9 @@ int main()
         std::int32_t msaaSamples{1};
         float renderScale{1.0f};
         KHR_Settings presentMode{KHR_Settings::VSync};
+        bool alphaToCoverage{false};
+        bool sampleShading{false};
+        float minSampleShading{0.30f};
         bool initialized{false};
         bool dirty{false};
         bool autoApply{true};
@@ -1252,6 +1255,9 @@ int main()
         graphicsDraft.msaaSamples = renderer.get_msaa_samples();
         graphicsDraft.renderScale = renderer.get_render_scale();
         graphicsDraft.presentMode = present_mode_to_setting(vulkan.get_present_mode());
+        graphicsDraft.alphaToCoverage = renderer.get_alpha_to_coverage();
+        graphicsDraft.sampleShading = renderer.get_sample_shading();
+        graphicsDraft.minSampleShading = renderer.get_min_sample_shading();
         graphicsDraft.initialized = true;
         graphicsDraft.dirty = false;
     };
@@ -1539,6 +1545,9 @@ int main()
                 if (graphicsApplyRequested)
                 {
                     renderer.set_msaa_samples(graphicsDraft.msaaSamples);
+                    renderer.set_alpha_to_coverage(graphicsDraft.alphaToCoverage);
+                    renderer.set_sample_shading(graphicsDraft.sampleShading);
+                    renderer.set_min_sample_shading(graphicsDraft.minSampleShading);
                     renderer.set_render_scale(graphicsDraft.renderScale);
                     renderer.set_vsync(graphicsDraft.presentMode);
                     refresh_viewport_texture();
@@ -2088,8 +2097,20 @@ int main()
                 {
                     if (ImGui::Begin("Graphics Settings", &showGraphicsPanel))
                     {
+                        // SSAA lock: when render scale > 1.0, force MSAA to 1x
+                        const bool ssaaActive = (graphicsDraft.renderScale > 1.0f);
+                        if (ssaaActive && graphicsDraft.msaaSamples != 1)
+                        {
+                            graphicsDraft.msaaSamples = 1;
+                            graphicsDraft.alphaToCoverage = false;
+                            graphicsDraft.sampleShading = false;
+                            graphicsDraft.dirty = true;
+                        }
+
                         // MSAA
                         bool msaaChanged = false;
+                        if (ssaaActive)
+                            ImGui::BeginDisabled();
                         const char* msaaLabel = msaa_sample_count_name(graphicsDraft.msaaSamples);
                         if (ImGui::BeginCombo("MSAA", msaaLabel))
                         {
@@ -2108,6 +2129,42 @@ int main()
                             }
                             ImGui::EndCombo();
                         }
+                        if (ssaaActive && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                            ImGui::SetTooltip("MSAA is locked to Off when Render Scale > 1.0 (SSAA).\nReduce Render Scale to 1.0 or below to enable MSAA.");
+                        if (ssaaActive)
+                            ImGui::EndDisabled();
+
+                        // Alpha-to-Coverage and Sample Shading (only when MSAA is active)
+                        const bool msaaActive = (graphicsDraft.msaaSamples > 1);
+                        if (!msaaActive)
+                            ImGui::BeginDisabled();
+
+                        bool a2cChanged = ImGui::Checkbox("Alpha-to-Coverage (A2C)", &graphicsDraft.alphaToCoverage);
+                        if (a2cChanged)
+                            graphicsDraft.dirty = true;
+                        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                            ImGui::SetTooltip("Uses alpha channel to control MSAA coverage mask.\nUseful for transparent textures like foliage.");
+
+                        bool sampleShadingChanged = ImGui::Checkbox("Sample Shading (Partial SSAA)", &graphicsDraft.sampleShading);
+                        if (sampleShadingChanged)
+                            graphicsDraft.dirty = true;
+                        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                            ImGui::SetTooltip("Runs the fragment shader per-sample, reducing\ntexture aliasing inside polygons. Costly but high quality.");
+
+                        if (!graphicsDraft.sampleShading || !msaaActive)
+                            ImGui::BeginDisabled();
+                        bool minSampleChanged = ImGui::SliderFloat(
+                            "Min Sample Shading", &graphicsDraft.minSampleShading, 0.0f, 1.0f, "%.2f");
+                        const bool minSampleReleased = ImGui::IsItemDeactivatedAfterEdit();
+                        if (minSampleChanged)
+                            graphicsDraft.dirty = true;
+                        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                            ImGui::SetTooltip("Fraction of samples that run the fragment shader.\n0.25 = quarter samples, 1.0 = all samples (full SSAA quality).");
+                        if (!graphicsDraft.sampleShading || !msaaActive)
+                            ImGui::EndDisabled();
+
+                        if (!msaaActive)
+                            ImGui::EndDisabled();
 
                         // Render scale
                         bool renderScaleChanged =
@@ -2115,6 +2172,8 @@ int main()
                         const bool renderScaleReleased = ImGui::IsItemDeactivatedAfterEdit();
                         if (renderScaleChanged)
                             graphicsDraft.dirty = true;
+                        if (graphicsDraft.renderScale > 1.0f)
+                            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "SSAA active (Render Scale > 1.0). MSAA locked to Off.");
 
                         // Present mode
                         bool presentModeChanged = false;
@@ -2145,9 +2204,10 @@ int main()
                         ImGui::Checkbox("Auto Apply", &graphicsDraft.autoApply);
                         if (graphicsDraft.autoApply && graphicsDraft.dirty)
                         {
-                            // Apply MSAA/present changes immediately, but only apply render scale when the slider
-                            // interaction is committed (release/enter) to avoid rapid recreate churn.
-                            if (msaaChanged || presentModeChanged || renderScaleReleased)
+                            // Apply MSAA/present/A2C/sample-shading changes immediately, but only apply render scale
+                            // and min sample shading when the slider interaction is committed (release/enter).
+                            if (msaaChanged || presentModeChanged || a2cChanged || sampleShadingChanged
+                                || renderScaleReleased || minSampleReleased)
                                 graphicsApplyRequested = true;
                         }
 

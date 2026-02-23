@@ -11,7 +11,7 @@ VulkanPipeline::~VulkanPipeline()
     release_cache();
 }
 
-Result<> VulkanPipeline::initialize(VkRenderPass renderPass, VkSampleCountFlagBits msaaSamples,
+Result<> VulkanPipeline::initialize(VkRenderPass renderPass, const MultisampleConfig& msConfig,
                                     const std::vector<uint32_t>& vertSpirv, const std::vector<uint32_t>& fragSpirv)
 {
     VkDevice device = m_device.get_device();
@@ -118,8 +118,11 @@ Result<> VulkanPipeline::initialize(VkRenderPass renderPass, VkSampleCountFlagBi
 
     VkPipelineMultisampleStateCreateInfo multisampling{};
     multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling.sampleShadingEnable = false;
-    multisampling.rasterizationSamples = msaaSamples;
+    multisampling.rasterizationSamples = msConfig.samples;
+    multisampling.sampleShadingEnable = msConfig.sampleShading ? VK_TRUE : VK_FALSE;
+    multisampling.minSampleShading = msConfig.minSampleShading;
+    multisampling.alphaToCoverageEnable = msConfig.alphaToCoverage ? VK_TRUE : VK_FALSE;
+    multisampling.alphaToOneEnable = VK_FALSE;
 
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;

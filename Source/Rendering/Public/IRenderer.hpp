@@ -78,6 +78,18 @@ class NOC_EXPORT IRenderer
     /// Get current MSAA sample count.
     virtual std::int32_t get_msaa_samples() const noexcept = 0;
 
+    /// Enable/disable alpha-to-coverage (only takes effect when MSAA is active).
+    virtual void set_alpha_to_coverage(bool enabled) noexcept = 0;
+    virtual bool get_alpha_to_coverage() const noexcept = 0;
+
+    /// Enable/disable sample shading (partial SSAA; only useful when MSAA is active).
+    virtual void set_sample_shading(bool enabled) noexcept = 0;
+    virtual bool get_sample_shading() const noexcept = 0;
+
+    /// Set minimum sample shading fraction [0.0, 1.0]. Only used when sample shading is enabled.
+    virtual void set_min_sample_shading(float fraction) noexcept = 0;
+    virtual float get_min_sample_shading() const noexcept = 0;
+
     /// Set render resolution scale (0.25 to 2.0). 1.0 = native resolution.
     virtual void set_render_scale(float scale) noexcept = 0;
 

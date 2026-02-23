@@ -402,7 +402,11 @@ Result<> VulkanDevice::create_logical_device()
         queueCreateInfos.push_back(queueCreateInfo);
     }
 
+    VkPhysicalDeviceFeatures supportedFeatures{};
+    vkGetPhysicalDeviceFeatures(m_physicalDevice, &supportedFeatures);
+
     VkPhysicalDeviceFeatures deviceFeatures{};
+    deviceFeatures.sampleRateShading = supportedFeatures.sampleRateShading; // for sample shading (partial SSAA)
 
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

@@ -253,6 +253,12 @@ class NOC_EXPORT Vulkan : public IRenderer
     bool get_vsync() const noexcept override;
     void set_msaa_samples(std::int32_t samples) noexcept override;
     std::int32_t get_msaa_samples() const noexcept override;
+    void set_alpha_to_coverage(bool enabled) noexcept override;
+    bool get_alpha_to_coverage() const noexcept override;
+    void set_sample_shading(bool enabled) noexcept override;
+    bool get_sample_shading() const noexcept override;
+    void set_min_sample_shading(float fraction) noexcept override;
+    float get_min_sample_shading() const noexcept override;
     void set_render_scale(float scale) noexcept override;
     float get_render_scale() const noexcept override;
 
@@ -394,6 +400,9 @@ class NOC_EXPORT Vulkan : public IRenderer
     // --- Settings ---
     float m_renderScale{1.0f};
     VkSampleCountFlagBits m_msaaSamples{VK_SAMPLE_COUNT_1_BIT};
+    bool m_alphaToCoverageEnabled{false};
+    bool m_sampleShadingEnabled{false};
+    float m_minSampleShading{0.25f};
     bool m_vsyncEnabled{false}; // Default: auto (mailbox preferred)
 
     // --- Shader paths and cached SPIR-V ---

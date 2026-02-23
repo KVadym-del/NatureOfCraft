@@ -58,8 +58,11 @@ Result<> Vulkan::initialize() noexcept
         m_fragSpirv = std::move(fragResult.value());
     }
 
-    if (auto result = m_pipeline.initialize(m_sceneRenderPass, m_msaaSamples, m_vertSpirv, m_fragSpirv); !result)
-        return result;
+    {
+        MultisampleConfig msConfig{m_msaaSamples, m_alphaToCoverageEnabled, m_sampleShadingEnabled, m_minSampleShading};
+        if (auto result = m_pipeline.initialize(m_sceneRenderPass, msConfig, m_vertSpirv, m_fragSpirv); !result)
+            return result;
+    }
 
     if (auto result = create_sampler(); !result)
         return result;
@@ -1864,7 +1867,8 @@ void Vulkan::set_msaa_samples(std::int32_t samples) noexcept
         compute_scene_render_size();
         if (auto result = create_scene_render_target(); !result)
             return result;
-        return m_pipeline.initialize(m_sceneRenderPass, m_msaaSamples, m_vertSpirv, m_fragSpirv);
+        MultisampleConfig msConfig{m_msaaSamples, m_alphaToCoverageEnabled, m_sampleShadingEnabled, m_minSampleShading};
+        return m_pipeline.initialize(m_sceneRenderPass, msConfig, m_vertSpirv, m_fragSpirv);
     };
 
     if (auto result = rebuild_for_msaa(desired); !result)
@@ -1885,6 +1889,82 @@ void Vulkan::set_msaa_samples(std::int32_t samples) noexcept
 std::int32_t Vulkan::get_msaa_samples() const noexcept
 {
     return static_cast<std::int32_t>(m_msaaSamples);
+}
+
+void Vulkan::set_alpha_to_coverage(bool enabled) noexcept
+{
+    if (enabled == m_alphaToCoverageEnabled)
+        return;
+    m_alphaToCoverageEnabled = enabled;
+
+    // Pipeline-only rebuild (no render pass / framebuffer change)
+    VkDevice device = m_vulkanDevice.get_device();
+    vkDeviceWaitIdle(device);
+    m_pipeline.cleanup();
+    MultisampleConfig msConfig{m_msaaSamples, m_alphaToCoverageEnabled, m_sampleShadingEnabled, m_minSampleShading};
+    if (auto result = m_pipeline.initialize(m_sceneRenderPass, msConfig, m_vertSpirv, m_fragSpirv); !result)
+    {
+        fmt::print("Warning: failed to apply alpha-to-coverage setting: {}\n", result.error().message);
+        m_alphaToCoverageEnabled = !enabled;
+        m_pipeline.cleanup();
+        MultisampleConfig rollback{m_msaaSamples, m_alphaToCoverageEnabled, m_sampleShadingEnabled, m_minSampleShading};
+        (void)m_pipeline.initialize(m_sceneRenderPass, rollback, m_vertSpirv, m_fragSpirv);
+    }
+}
+
+bool Vulkan::get_alpha_to_coverage() const noexcept
+{
+    return m_alphaToCoverageEnabled;
+}
+
+void Vulkan::set_sample_shading(bool enabled) noexcept
+{
+    if (enabled == m_sampleShadingEnabled)
+        return;
+    m_sampleShadingEnabled = enabled;
+
+    VkDevice device = m_vulkanDevice.get_device();
+    vkDeviceWaitIdle(device);
+    m_pipeline.cleanup();
+    MultisampleConfig msConfig{m_msaaSamples, m_alphaToCoverageEnabled, m_sampleShadingEnabled, m_minSampleShading};
+    if (auto result = m_pipeline.initialize(m_sceneRenderPass, msConfig, m_vertSpirv, m_fragSpirv); !result)
+    {
+        fmt::print("Warning: failed to apply sample shading setting: {}\n", result.error().message);
+        m_sampleShadingEnabled = !enabled;
+        m_pipeline.cleanup();
+        MultisampleConfig rollback{m_msaaSamples, m_alphaToCoverageEnabled, m_sampleShadingEnabled, m_minSampleShading};
+        (void)m_pipeline.initialize(m_sceneRenderPass, rollback, m_vertSpirv, m_fragSpirv);
+    }
+}
+
+bool Vulkan::get_sample_shading() const noexcept
+{
+    return m_sampleShadingEnabled;
+}
+
+void Vulkan::set_min_sample_shading(float fraction) noexcept
+{
+    fraction = std::clamp(fraction, 0.0f, 1.0f);
+    if (std::fabs(fraction - m_minSampleShading) < 0.0001f)
+        return;
+    m_minSampleShading = fraction;
+
+    VkDevice device = m_vulkanDevice.get_device();
+    vkDeviceWaitIdle(device);
+    m_pipeline.cleanup();
+    MultisampleConfig msConfig{m_msaaSamples, m_alphaToCoverageEnabled, m_sampleShadingEnabled, m_minSampleShading};
+    if (auto result = m_pipeline.initialize(m_sceneRenderPass, msConfig, m_vertSpirv, m_fragSpirv); !result)
+    {
+        fmt::print("Warning: failed to apply min sample shading setting: {}\n", result.error().message);
+        m_pipeline.cleanup();
+        MultisampleConfig rollback{m_msaaSamples, m_alphaToCoverageEnabled, m_sampleShadingEnabled, m_minSampleShading};
+        (void)m_pipeline.initialize(m_sceneRenderPass, rollback, m_vertSpirv, m_fragSpirv);
+    }
+}
+
+float Vulkan::get_min_sample_shading() const noexcept
+{
+    return m_minSampleShading;
 }
 
 void Vulkan::set_render_scale(float scale) noexcept
@@ -1931,5 +2011,6 @@ Result<> Vulkan::recompile_shaders()
 
     // Rebuild pipeline with new SPIR-V
     m_pipeline.cleanup();
-    return m_pipeline.initialize(m_sceneRenderPass, m_msaaSamples, m_vertSpirv, m_fragSpirv);
+    MultisampleConfig msConfig{m_msaaSamples, m_alphaToCoverageEnabled, m_sampleShadingEnabled, m_minSampleShading};
+    return m_pipeline.initialize(m_sceneRenderPass, msConfig, m_vertSpirv, m_fragSpirv);
 }

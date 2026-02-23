@@ -9,6 +9,15 @@
 
 NOC_SUPPRESS_DLL_WARNINGS
 
+/// Bundles all multisampling pipeline options into one POD.
+struct MultisampleConfig
+{
+    VkSampleCountFlagBits samples{VK_SAMPLE_COUNT_1_BIT};
+    bool alphaToCoverage{false};
+    bool sampleShading{false};
+    float minSampleShading{0.25f};
+};
+
 /// Owns the Vulkan graphics pipeline and pipeline layout.
 class NOC_EXPORT VulkanPipeline
 {
@@ -22,10 +31,10 @@ class NOC_EXPORT VulkanPipeline
 
     /// Creates the graphics pipeline using pre-compiled SPIR-V bytecode.
     /// @param renderPass   The Vulkan render pass this pipeline will be used with.
-    /// @param msaaSamples  MSAA sample count for multisampling state.
+    /// @param msConfig     Multisampling configuration (sample count, A2C, sample shading).
     /// @param vertSpirv    Compiled vertex shader SPIR-V (uint32_t words).
     /// @param fragSpirv    Compiled fragment shader SPIR-V (uint32_t words).
-    Result<> initialize(VkRenderPass renderPass, VkSampleCountFlagBits msaaSamples,
+    Result<> initialize(VkRenderPass renderPass, const MultisampleConfig& msConfig,
                         const std::vector<uint32_t>& vertSpirv, const std::vector<uint32_t>& fragSpirv);
 
     /// Destroys pipeline and pipeline layout.
