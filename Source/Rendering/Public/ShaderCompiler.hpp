@@ -9,12 +9,11 @@
 #include <vector>
 
 NOC_SUPPRESS_DLL_WARNINGS
-
-/// Shader stage used to select the correct shaderc shader kind.
 enum class ShaderStage
 {
     Vertex,
     Fragment,
+    Compute,
 };
 
 /// Compiles GLSL shader source to SPIR-V bytecode at runtime using shaderc.
@@ -27,8 +26,11 @@ class NOC_EXPORT ShaderCompiler
     /// @param glslSource  The GLSL source code.
     /// @param stage       Vertex or Fragment.
     /// @param filename    A label used in error messages (does not need to exist on disk).
-    static Result<std::vector<std::uint32_t>> compile(std::string_view glslSource, ShaderStage stage,
-                                                      std::string_view filename = "shader");
+    static Result<std::vector<std::uint32_t>> compile(
+        std::string_view glslSource,
+        ShaderStage stage,
+        std::string_view filename = "shader"
+    );
 
     /// Reads a GLSL file from disk and compiles it to SPIR-V.
     /// @param glslPath    Path to the .vert / .frag file.
@@ -38,12 +40,23 @@ class NOC_EXPORT ShaderCompiler
     /// If spvPath already exists and is newer than glslPath, reads the cached .spv instead.
     /// @param glslPath    Path to the GLSL source file.
     /// @param spvPath     Path where compiled .spv should be written / read.
-    static Result<std::vector<std::uint32_t>> compile_or_cache(const std::filesystem::path& glslPath,
-                                                               const std::filesystem::path& spvPath);
+    static Result<std::vector<std::uint32_t>> compile_or_cache(
+        const std::filesystem::path& glslPath,
+        const std::filesystem::path& spvPath
+    );
 
     /// Convenience: derives the .spv path by replacing the extension.
     /// e.g. "Assets/Shaders/shader.vert" -> "Assets/Shaders/shader.vert.spv"
     static std::filesystem::path get_spv_path(const std::filesystem::path& glslPath);
+
+    /// Compiles a GLSL compute shader that uses #include directives.
+    /// Resolves includes by searching the given directories.
+    /// @param glslPath      Path to the .glsl / .comp file.
+    /// @param includeDirs   Directories to search for included files.
+    static Result<std::vector<std::uint32_t>> compile_compute_with_includes(
+        const std::filesystem::path& glslPath,
+        const std::vector<std::filesystem::path>& includeDirs
+    );
 
   private:
     /// Detects shader stage from file extension (.vert / .frag).

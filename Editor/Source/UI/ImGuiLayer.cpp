@@ -68,7 +68,7 @@ bool InitializeImGuiForVulkan(Vulkan& vulkan, GLFWwindow* window)
 
     VkDevice device = vulkan.get_device();
     g_ImGuiDescriptorPool = create_imgui_descriptor_pool(device);
-    if (g_ImGuiDescriptorPool == VK_NULL_HANDLE)
+    if (g_ImGuiDescriptorPool == nullptr)
         return false;
 
     ImGui_ImplVulkan_InitInfo init_info{};
@@ -78,7 +78,7 @@ bool InitializeImGuiForVulkan(Vulkan& vulkan, GLFWwindow* window)
     init_info.Device = device;
     init_info.QueueFamily = vulkan.get_graphics_queue_family_index();
     init_info.Queue = vulkan.get_graphics_queue();
-    init_info.PipelineCache = VK_NULL_HANDLE;
+    init_info.PipelineCache = nullptr;
     init_info.DescriptorPool = g_ImGuiDescriptorPool;
     init_info.RenderPass = vulkan.get_ui_render_pass();
     init_info.Subpass = 0;
@@ -127,10 +127,10 @@ void Shutdown(Vulkan& vulkan)
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplGlfw_Shutdown();
 
-    if (g_ImGuiDescriptorPool != VK_NULL_HANDLE)
+    if (g_ImGuiDescriptorPool != nullptr)
     {
         vkDestroyDescriptorPool(vulkan.get_device(), g_ImGuiDescriptorPool, nullptr);
-        g_ImGuiDescriptorPool = VK_NULL_HANDLE;
+        g_ImGuiDescriptorPool = nullptr;
     }
 
     g_ImGuiInitialized = false;

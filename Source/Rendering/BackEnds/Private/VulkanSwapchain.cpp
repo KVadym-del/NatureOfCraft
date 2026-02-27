@@ -33,10 +33,10 @@ void VulkanSwapchain::cleanup()
 {
     VkDevice device = m_device.get_device();
 
-    if (m_uiRenderPass != VK_NULL_HANDLE)
+    if (m_uiRenderPass != nullptr)
     {
         vkDestroyRenderPass(device, m_uiRenderPass, nullptr);
-        m_uiRenderPass = VK_NULL_HANDLE;
+        m_uiRenderPass = nullptr;
     }
 
     cleanup_swap_chain();
@@ -70,7 +70,7 @@ Result<> VulkanSwapchain::create_swap_chain()
     VkPresentModeKHR presentMode = choose_swap_present_mode(swapChainSupport.presentModes);
     VkExtent2D extent = choose_swap_extent(swapChainSupport.capabilities);
 
-    uint32_t imageCount = swapChainSupport.capabilities.minImageCount + 1;
+    std::uint32_t imageCount = swapChainSupport.capabilities.minImageCount + 1;
     if (swapChainSupport.capabilities.maxImageCount > 0 && imageCount > swapChainSupport.capabilities.maxImageCount)
     {
         imageCount = swapChainSupport.capabilities.maxImageCount;
@@ -89,7 +89,7 @@ Result<> VulkanSwapchain::create_swap_chain()
     createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
     QueueFamilyIndices indices = m_device.find_queue_families(physicalDevice);
-    uint32_t queueFamilyIndices[] = {
+    std::uint32_t queueFamilyIndices[] = {
         indices.graphicsFamily.value(),
         indices.presentFamily.value(),
     };
@@ -136,28 +136,28 @@ void VulkanSwapchain::cleanup_swap_chain()
 
     for (auto& framebuffer : m_uiFramebuffers)
     {
-        if (framebuffer != VK_NULL_HANDLE)
+        if (framebuffer != nullptr)
         {
             vkDestroyFramebuffer(device, framebuffer, nullptr);
-            framebuffer = VK_NULL_HANDLE;
+            framebuffer = nullptr;
         }
     }
     m_uiFramebuffers.clear();
 
     for (auto& imageView : m_swapChainImageViews)
     {
-        if (imageView != VK_NULL_HANDLE)
+        if (imageView != nullptr)
         {
             vkDestroyImageView(device, imageView, nullptr);
-            imageView = VK_NULL_HANDLE;
+            imageView = nullptr;
         }
     }
     m_swapChainImageViews.clear();
 
-    if (m_swapChain != VK_NULL_HANDLE)
+    if (m_swapChain != nullptr)
     {
         vkDestroySwapchainKHR(device, m_swapChain, nullptr);
-        m_swapChain = VK_NULL_HANDLE;
+        m_swapChain = nullptr;
     }
 
     m_swapChainImages.clear();
@@ -169,7 +169,7 @@ Result<> VulkanSwapchain::create_image_views()
 
     m_swapChainImageViews.resize(m_swapChainImages.size());
 
-    for (size_t i = 0; i < m_swapChainImages.size(); i++)
+    for (std::size_t i = 0; i < m_swapChainImages.size(); i++)
     {
         VkImageViewCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -188,12 +188,12 @@ Result<> VulkanSwapchain::create_image_views()
 
         if (vkCreateImageView(device, &createInfo, nullptr, &m_swapChainImageViews[i]) != VK_SUCCESS)
         {
-            for (size_t j = 0; j < i; ++j)
+            for (std::size_t j = 0; j < i; ++j)
             {
-                if (m_swapChainImageViews[j] != VK_NULL_HANDLE)
+                if (m_swapChainImageViews[j] != nullptr)
                 {
                     vkDestroyImageView(device, m_swapChainImageViews[j], nullptr);
-                    m_swapChainImageViews[j] = VK_NULL_HANDLE;
+                    m_swapChainImageViews[j] = nullptr;
                 }
             }
             m_swapChainImageViews.clear();
@@ -259,10 +259,10 @@ Result<> VulkanSwapchain::create_ui_framebuffers()
     VkDevice device = m_device.get_device();
 
     m_uiFramebuffers.resize(m_swapChainImageViews.size());
-    for (size_t i = 0; i < m_swapChainImageViews.size(); i++)
+    for (std::size_t i = 0; i < m_swapChainImageViews.size(); i++)
     {
         // UI framebuffer: color only (no depth)
-        VkImageView attachments[] = {m_swapChainImageViews[i]};
+        VkImageView attachments[]{m_swapChainImageViews[i]};
 
         VkFramebufferCreateInfo framebufferInfo{};
         framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -275,12 +275,12 @@ Result<> VulkanSwapchain::create_ui_framebuffers()
 
         if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &m_uiFramebuffers[i]) != VK_SUCCESS)
         {
-            for (size_t j = 0; j < i; ++j)
+            for (std::size_t j = 0; j < i; ++j)
             {
-                if (m_uiFramebuffers[j] != VK_NULL_HANDLE)
+                if (m_uiFramebuffers[j] != nullptr)
                 {
                     vkDestroyFramebuffer(device, m_uiFramebuffers[j], nullptr);
-                    m_uiFramebuffers[j] = VK_NULL_HANDLE;
+                    m_uiFramebuffers[j] = nullptr;
                 }
             }
             m_uiFramebuffers.clear();
@@ -305,7 +305,8 @@ VkSurfaceFormatKHR VulkanSwapchain::choose_swap_surface_format(
 }
 
 VkPresentModeKHR VulkanSwapchain::choose_swap_present_mode(
-    const std::vector<VkPresentModeKHR>& availablePresentModes) noexcept
+    const std::vector<VkPresentModeKHR>& availablePresentModes
+) noexcept
 {
     // If a specific present mode was requested, try to use it
     if (m_desiredPresentMode != VK_PRESENT_MODE_MAX_ENUM_KHR)
@@ -337,16 +338,14 @@ VkExtent2D VulkanSwapchain::choose_swap_extent(const VkSurfaceCapabilitiesKHR& c
     }
     else
     {
-        std::int32_t width;
-        std::int32_t height;
+        std::int32_t width{};
+        std::int32_t height{};
         glfwGetFramebufferSize(m_device.get_window(), &width, &height);
 
-        VkExtent2D actualExtent = {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)};
+        VkExtent2D actualExtent {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)};
 
-        actualExtent.width =
-            std::clamp(actualExtent.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
-        actualExtent.height =
-            std::clamp(actualExtent.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
+        actualExtent.width = std::clamp(actualExtent.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
+        actualExtent.height = std::clamp(actualExtent.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
 
         return actualExtent;
     }

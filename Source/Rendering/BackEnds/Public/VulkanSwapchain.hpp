@@ -52,13 +52,13 @@ class NOC_EXPORT VulkanSwapchain
     {
         return m_swapChainImageFormat;
     }
-    inline VkFramebuffer get_ui_framebuffer(uint32_t index) const noexcept
+    inline VkFramebuffer get_ui_framebuffer(std::uint32_t index) const noexcept
     {
         return m_uiFramebuffers[index];
     }
-    inline uint32_t get_image_count() const noexcept
+    inline std::uint32_t get_image_count() const noexcept
     {
-        return static_cast<uint32_t>(m_swapChainImages.size());
+        return static_cast<std::uint32_t>(m_swapChainImages.size());
     }
     inline VkPresentModeKHR get_present_mode() const noexcept
     {

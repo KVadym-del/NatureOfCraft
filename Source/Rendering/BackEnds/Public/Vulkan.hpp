@@ -56,9 +56,13 @@ class NOC_EXPORT Vulkan : public IRenderer
 
     Result<uint32_t> upload_texture(const TextureData& textureData) override;
 
-    Result<uint32_t> upload_material(uint32_t albedoTextureIndex, uint32_t normalTextureIndex,
-                                     uint32_t roughnessTextureIndex, uint32_t metallicTextureIndex,
-                                     uint32_t aoTextureIndex) override;
+    Result<uint32_t> upload_material(
+        std::uint32_t albedoTextureIndex, 
+        std::uint32_t normalTextureIndex,
+        std::uint32_t roughnessTextureIndex,
+        std::uint32_t metallicTextureIndex,
+        std::uint32_t aoTextureIndex
+    ) override;
 
     Result<> clear_scene_content() noexcept override;
 
@@ -94,13 +98,13 @@ class NOC_EXPORT Vulkan : public IRenderer
     }
     inline VkImageView get_scene_color_image_view() const noexcept
     {
-        return m_sceneColorView;
+        return get_active_scene_view();
     }
     inline VkExtent2D get_swapchain_extent() const noexcept
     {
         return m_swapchain.get_extent();
     }
-    inline uint32_t get_swapchain_image_count() const noexcept
+    inline std::uint32_t get_swapchain_image_count() const noexcept
     {
         return m_swapchain.get_image_count();
     }
@@ -108,11 +112,11 @@ class NOC_EXPORT Vulkan : public IRenderer
     {
         return m_vulkanDevice.get_command_pool();
     }
-    inline uint32_t get_current_frame_index() const noexcept
+    inline std::uint32_t get_current_frame_index() const noexcept
     {
         return m_currentFrame;
     }
-    inline uint32_t get_graphics_queue_family_index() noexcept
+    inline std::uint32_t get_graphics_queue_family_index() noexcept
     {
         return m_vulkanDevice.get_graphics_queue_family_index();
     }
@@ -130,71 +134,71 @@ class NOC_EXPORT Vulkan : public IRenderer
     {
         return m_swapchain.get_format();
     }
-    inline uint32_t get_mesh_count() const noexcept
+    inline std::uint32_t get_mesh_count() const noexcept
     {
-        return static_cast<uint32_t>(m_meshes.size());
+        return static_cast<std::uint32_t>(m_meshes.size());
     }
-    inline uint32_t get_texture_count() const noexcept
+    inline std::uint32_t get_texture_count() const noexcept
     {
-        return static_cast<uint32_t>(m_textures.size());
+        return static_cast<std::uint32_t>(m_textures.size());
     }
-    inline uint32_t get_material_count() const noexcept
+    inline std::uint32_t get_material_count() const noexcept
     {
-        return static_cast<uint32_t>(m_materials.size());
+        return static_cast<std::uint32_t>(m_materials.size());
     }
-    inline uint32_t get_renderable_count() const noexcept
+    inline std::uint32_t get_renderable_count() const noexcept
     {
-        return static_cast<uint32_t>(m_renderables.size());
+        return static_cast<std::uint32_t>(m_renderables.size());
     }
-    uint32_t get_total_triangle_count() const noexcept
+    std::uint32_t get_total_triangle_count() const noexcept
     {
         return m_totalTriangleCountCached;
     }
-    inline uint32_t get_last_visible_renderable_count() const noexcept
+    inline std::uint32_t get_last_visible_renderable_count() const noexcept
     {
         return m_lastVisibleRenderableCount;
     }
-    inline uint32_t get_last_culled_renderable_count() const noexcept
+    inline std::uint32_t get_last_culled_renderable_count() const noexcept
     {
         return m_lastCulledRenderableCount;
     }
-    inline uint32_t get_last_draw_call_count() const noexcept
+    inline std::uint32_t get_last_draw_call_count() const noexcept
     {
         return m_lastDrawCallCount;
     }
-    inline uint32_t get_last_instanced_batch_count() const noexcept
+    inline std::uint32_t get_last_instanced_batch_count() const noexcept
     {
         return m_lastInstancedBatchCount;
     }
-    inline uint64_t get_mesh_memory_bytes() const noexcept
+    inline std::uint64_t get_mesh_memory_bytes() const noexcept
     {
         return m_meshMemoryBytes;
     }
-    inline uint64_t get_texture_memory_bytes() const noexcept
+    inline std::uint64_t get_texture_memory_bytes() const noexcept
     {
         return m_textureMemoryBytes;
     }
-    inline uint64_t get_instance_memory_bytes() const noexcept
+    inline std::uint64_t get_instance_memory_bytes() const noexcept
     {
         return m_instanceBufferMemoryBytes;
     }
-    inline uint64_t get_upload_staging_memory_bytes() const noexcept
+    inline std::uint64_t get_upload_staging_memory_bytes() const noexcept
     {
         return m_uploadStagingMemoryBytes;
     }
-    inline uint64_t get_scene_target_memory_bytes() const noexcept
+    inline std::uint64_t get_scene_target_memory_bytes() const noexcept
     {
         return m_sceneColorMemoryBytes + m_sceneDepthMemoryBytes + m_msaaColorMemoryBytes;
     }
-    inline uint64_t get_tracked_device_local_memory_bytes() const noexcept
+    inline std::uint64_t get_tracked_device_local_memory_bytes() const noexcept
     {
         return m_meshMemoryBytes + m_textureMemoryBytes + get_scene_target_memory_bytes();
     }
-    inline uint64_t get_tracked_host_visible_memory_bytes() const noexcept
+    inline std::uint64_t get_tracked_host_visible_memory_bytes() const noexcept
     {
         return m_instanceBufferMemoryBytes + m_uploadStagingMemoryBytes;
     }
-    inline uint64_t get_total_tracked_memory_bytes() const noexcept
+    inline std::uint64_t get_total_tracked_memory_bytes() const noexcept
     {
         return get_tracked_device_local_memory_bytes() + get_tracked_host_visible_memory_bytes();
     }
@@ -239,11 +243,11 @@ class NOC_EXPORT Vulkan : public IRenderer
         m_framebufferResized = true;
     }
 
-    uint32_t get_render_width() const noexcept override
+    std::uint32_t get_render_width() const noexcept override
     {
         return m_sceneRenderWidth;
     }
-    uint32_t get_render_height() const noexcept override
+    std::uint32_t get_render_height() const noexcept override
     {
         return m_sceneRenderHeight;
     }
@@ -259,6 +263,10 @@ class NOC_EXPORT Vulkan : public IRenderer
     bool get_sample_shading() const noexcept override;
     void set_min_sample_shading(float fraction) noexcept override;
     float get_min_sample_shading() const noexcept override;
+    void set_nis_enabled(bool enabled) noexcept override;
+    bool get_nis_enabled() const noexcept override;
+    void set_nis_sharpness(float sharpness) noexcept override;
+    float get_nis_sharpness() const noexcept override;
     void set_render_scale(float scale) noexcept override;
     float get_render_scale() const noexcept override;
 
@@ -268,7 +276,7 @@ class NOC_EXPORT Vulkan : public IRenderer
 
   private:
     Result<> create_command_buffers();
-    Result<> record_command_buffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) noexcept;
+    Result<> record_command_buffer(VkCommandBuffer commandBuffer, std::uint32_t imageIndex) noexcept;
     Result<> create_sync_objects();
     Result<> recreate_swap_chain();
     Result<> ensure_instance_buffer_capacity(std::size_t requiredInstances);
@@ -290,16 +298,27 @@ class NOC_EXPORT Vulkan : public IRenderer
     void compute_scene_render_size();
     VkSampleCountFlagBits get_max_usable_sample_count() const noexcept;
 
+    // --- NIS (NVIDIA Image Scaling) ---
+    Result<> create_nis_resources();
+    void cleanup_nis_resources();
+    void update_nis_config();
+    void dispatch_nis_pass(VkCommandBuffer cmd);
+    /// Returns the image view the editor should sample for the viewport.
+    VkImageView get_active_scene_view() const noexcept;
+
     Result<VkFormat> find_depth_format();
-    Result<VkFormat> find_supported_format(const std::vector<VkFormat>& candidates, VkImageTiling tiling,
-                                           VkFormatFeatureFlags features);
+    Result<VkFormat> find_supported_format(
+        const std::vector<VkFormat>& candidates, 
+        VkImageTiling tiling,
+        VkFormatFeatureFlags features
+    );
 
     struct InstanceBatch
     {
-        uint32_t meshIndex{0};
-        uint32_t materialIndex{0};
-        uint32_t firstInstance{0};
-        uint32_t instanceCount{0};
+        uint32_t meshIndex{};
+        uint32_t materialIndex{};
+        uint32_t firstInstance{};
+        uint32_t instanceCount{};
     };
 
     struct InstanceData
@@ -331,71 +350,71 @@ class NOC_EXPORT Vulkan : public IRenderer
 
     std::vector<Mesh> m_meshes{};
     std::vector<Renderable> m_renderables{};
-    uint32_t m_totalTriangleCountCached{0};
-    uint32_t m_lastVisibleRenderableCount{0};
-    uint32_t m_lastCulledRenderableCount{0};
-    uint32_t m_lastDrawCallCount{0};
-    uint32_t m_lastInstancedBatchCount{0};
-    uint64_t m_meshMemoryBytes{0};
-    uint64_t m_textureMemoryBytes{0};
-    uint64_t m_instanceBufferMemoryBytes{0};
-    uint64_t m_uploadStagingMemoryBytes{0};
-    std::unordered_map<std::string, uint32_t> m_meshLookup{};
+    std::uint32_t m_totalTriangleCountCached{};
+    std::uint32_t m_lastVisibleRenderableCount{};
+    std::uint32_t m_lastCulledRenderableCount{};
+    std::uint32_t m_lastDrawCallCount{};
+    std::uint32_t m_lastInstancedBatchCount{};
+    std::uint64_t m_meshMemoryBytes{};
+    std::uint64_t m_textureMemoryBytes{};
+    std::uint64_t m_instanceBufferMemoryBytes{};
+    std::uint64_t m_uploadStagingMemoryBytes{};
+    std::unordered_map<std::string, std::uint32_t> m_meshLookup{};
 
     std::vector<GpuTexture> m_textures{};
-    std::unordered_map<std::string, uint32_t> m_textureLookup{};
-    VkSampler m_sampler{VK_NULL_HANDLE};
-    uint32_t m_defaultAlbedoTextureIndex{};
-    uint32_t m_defaultNormalTextureIndex{};
-    uint32_t m_defaultRoughnessTextureIndex{};
-    uint32_t m_defaultMetallicTextureIndex{};
-    uint32_t m_defaultAOTextureIndex{};
+    std::unordered_map<std::string, std::uint32_t> m_textureLookup{};
+    VkSampler m_sampler{nullptr};
+    std::uint32_t m_defaultAlbedoTextureIndex{};
+    std::uint32_t m_defaultNormalTextureIndex{};
+    std::uint32_t m_defaultRoughnessTextureIndex{};
+    std::uint32_t m_defaultMetallicTextureIndex{};
+    std::uint32_t m_defaultAOTextureIndex{};
 
     std::vector<GpuMaterial> m_materials{};
-    std::unordered_map<uint64_t, uint32_t> m_materialLookup{};
-    VkDescriptorPool m_descriptorPool{VK_NULL_HANDLE};
-    uint32_t m_defaultMaterialIndex{};
+    std::unordered_map<std::uint64_t, std::uint32_t> m_materialLookup{};
+    VkDescriptorPool m_descriptorPool{};
+    std::uint32_t m_defaultMaterialIndex{};
 
     std::array<VkBuffer, MAX_FRAMES_IN_FLIGHT> m_instanceBuffers{};
     std::array<VkDeviceMemory, MAX_FRAMES_IN_FLIGHT> m_instanceBufferMemories{};
     std::array<void*, MAX_FRAMES_IN_FLIGHT> m_instanceBufferMappings{};
     std::array<VkDeviceSize, MAX_FRAMES_IN_FLIGHT> m_instanceBufferAllocatedBytes{};
-    std::size_t m_instanceBufferCapacity{0};
+    std::size_t m_instanceBufferCapacity{};
     std::vector<InstanceData> m_instanceDataScratch{};
     std::vector<InstanceBatch> m_instanceBatchesScratch{};
 
-    VkBuffer m_uploadStagingBuffer{VK_NULL_HANDLE};
-    VkDeviceMemory m_uploadStagingBufferMemory{VK_NULL_HANDLE};
-    void* m_uploadStagingMapped{nullptr};
-    VkDeviceSize m_uploadStagingCapacity{0};
+    VkBuffer m_uploadStagingBuffer{};
+    VkDeviceMemory m_uploadStagingBufferMemory{};
+    void* m_uploadStagingMapped{};
+    VkDeviceSize m_uploadStagingCapacity{};
 
     DirectX::XMFLOAT4X4 m_viewMatrix{};
     DirectX::XMFLOAT4X4 m_projMatrix{};
 
     // --- Offscreen scene render target ---
-    VkRenderPass m_sceneRenderPass{VK_NULL_HANDLE};
-    VkFramebuffer m_sceneFramebuffer{VK_NULL_HANDLE};
+    VkRenderPass m_sceneRenderPass{};
+    VkFramebuffer m_sceneFramebuffer{};
 
     // Resolve/final color (always 1x sample) — blit source
-    VkImage m_sceneColorImage{VK_NULL_HANDLE};
-    VkDeviceMemory m_sceneColorMemory{VK_NULL_HANDLE};
-    VkImageView m_sceneColorView{VK_NULL_HANDLE};
-    uint64_t m_sceneColorMemoryBytes{0};
+    VkImage m_sceneColorImage{};
+    VkDeviceMemory m_sceneColorMemory{};
+    VkImageView m_sceneColorView{};
+    std::uint64_t m_sceneColorMemoryBytes{};
 
     // Depth (matches MSAA sample count)
-    VkImage m_sceneDepthImage{VK_NULL_HANDLE};
-    VkDeviceMemory m_sceneDepthMemory{VK_NULL_HANDLE};
-    VkImageView m_sceneDepthView{VK_NULL_HANDLE};
-    uint64_t m_sceneDepthMemoryBytes{0};
+    VkImage m_sceneDepthImage{};
+    VkDeviceMemory m_sceneDepthMemory{};
+    VkImageView m_sceneDepthView{};
+    std::uint64_t m_sceneDepthMemoryBytes{};
 
     // MSAA color (only when msaaSamples > 1)
-    VkImage m_msaaColorImage{VK_NULL_HANDLE};
-    VkDeviceMemory m_msaaColorMemory{VK_NULL_HANDLE};
-    VkImageView m_msaaColorView{VK_NULL_HANDLE};
-    uint64_t m_msaaColorMemoryBytes{0};
+    VkImage m_msaaColorImage{};
+    VkDeviceMemory m_msaaColorMemory{};
+    VkImageView m_msaaColorView{};
+    std::uint64_t m_msaaColorMemoryBytes{};
 
-    uint32_t m_sceneRenderWidth{0};
-    uint32_t m_sceneRenderHeight{0};
+    std::uint32_t m_sceneRenderWidth{};
+    std::uint32_t m_sceneRenderHeight{};
 
     // --- Settings ---
     float m_renderScale{1.0f};
@@ -405,11 +424,34 @@ class NOC_EXPORT Vulkan : public IRenderer
     float m_minSampleShading{0.25f};
     bool m_vsyncEnabled{false}; // Default: auto (mailbox preferred)
 
+    // --- NIS (NVIDIA Image Scaling) ---
+    bool m_nisEnabled{false};
+    float m_nisSharpness{0.5f};
+    VkPipeline m_nisComputePipeline{};
+    VkPipelineLayout m_nisPipelineLayout{};
+    VkDescriptorSetLayout m_nisDescriptorSetLayout{};
+    VkDescriptorPool m_nisDescriptorPool{};
+    VkDescriptorSet m_nisDescriptorSet{};
+    VkImage m_nisOutputImage{};
+    VkDeviceMemory m_nisOutputMemory{};
+    VkImageView m_nisOutputView{};
+    VkImage m_nisCoefScalerImage{};
+    VkDeviceMemory m_nisCoefScalerMemory{};
+    VkImageView m_nisCoefScalerView{};
+    VkImage m_nisCoefUsmImage{};
+    VkDeviceMemory m_nisCoefUsmMemory{};
+    VkImageView m_nisCoefUsmView{};
+    VkBuffer m_nisConfigBuffer{};
+    VkDeviceMemory m_nisConfigMemory{};
+    VkSampler m_nisLinearSampler{};
+    std::vector<std::uint32_t> m_nisComputeSpirv{};
+    std::filesystem::path m_nisShaderPath{"Resources/NIS/NIS_Main.glsl"};
+
     // --- Shader paths and cached SPIR-V ---
     std::filesystem::path m_vertShaderPath{"Resources/shader.vert"};
     std::filesystem::path m_fragShaderPath{"Resources/shader.frag"};
-    std::vector<uint32_t> m_vertSpirv{};
-    std::vector<uint32_t> m_fragSpirv{};
+    std::vector<std::uint32_t> m_vertSpirv{};
+    std::vector<std::uint32_t> m_fragSpirv{};
 };
 
 NOC_RESTORE_DLL_WARNINGS

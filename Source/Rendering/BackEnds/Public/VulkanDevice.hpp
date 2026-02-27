@@ -22,8 +22,8 @@
 
 struct QueueFamilyIndices
 {
-    std::optional<uint32_t> graphicsFamily;
-    std::optional<uint32_t> presentFamily;
+    std::optional<std::uint32_t> graphicsFamily{};
+    std::optional<std::uint32_t> presentFamily{};
 
     inline bool is_complete() const noexcept
     {
@@ -41,8 +41,8 @@ struct SwapChainSupportDetails
 struct DeviceLocalMemoryBudget
 {
     bool supported{false};
-    uint64_t usageBytes{0};
-    uint64_t budgetBytes{0};
+    std::uint64_t usageBytes{};
+    std::uint64_t budgetBytes{};
 };
 
 NOC_SUPPRESS_DLL_WARNINGS
@@ -71,10 +71,16 @@ class NOC_EXPORT VulkanDevice
     SwapChainSupportDetails query_swap_chain_support(VkPhysicalDevice device) noexcept;
 
     // --- Utility methods used by other components ---
-    Result<uint32_t> find_memory_type(uint32_t typeFilter, VkMemoryPropertyFlags properties);
+    Result<std::uint32_t> find_memory_type(std::uint32_t typeFilter, VkMemoryPropertyFlags properties);
 
-    Result<> create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
-                           VkBuffer& buffer, VkDeviceMemory& bufferMemory, VkDeviceSize* outAllocationBytes = nullptr);
+    Result<> create_buffer(
+        VkDeviceSize size,
+        VkBufferUsageFlags usage,
+        VkMemoryPropertyFlags properties,
+        VkBuffer& buffer,
+        VkDeviceMemory& bufferMemory,
+        VkDeviceSize* outAllocationBytes = nullptr
+    );
 
     /// Allocates and begins a one-time command buffer from the main command pool.
     Result<VkCommandBuffer> begin_single_time_commands();
@@ -84,16 +90,24 @@ class NOC_EXPORT VulkanDevice
 
     Result<> copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size);
 
-    Result<> create_image(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling,
-                          VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image,
-                          VkDeviceMemory& imageMemory, VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
-                          VkDeviceSize* outAllocationBytes = nullptr);
+    Result<> create_image(
+        std::uint32_t width,
+        std::uint32_t height,
+        VkFormat format,
+        VkImageTiling tiling,
+        VkImageUsageFlags usage,
+        VkMemoryPropertyFlags properties, 
+        VkImage& image,
+        VkDeviceMemory& imageMemory, 
+        VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
+        VkDeviceSize* outAllocationBytes = nullptr
+    );
 
     Result<VkImageView> create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags);
 
     Result<> transition_image_layout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
 
-    Result<> copy_buffer_to_image(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
+    Result<> copy_buffer_to_image(VkBuffer buffer, VkImage image, std::uint32_t width, std::uint32_t height);
 
     // --- Getters ---
     inline VkInstance get_instance() const noexcept
@@ -156,20 +170,27 @@ class NOC_EXPORT VulkanDevice
 
     void populate_debug_messenger_create_info(VkDebugUtilsMessengerCreateInfoEXT& createInfo) noexcept;
 
-    static VKAPI_ATTR uint32_t VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-                                                         VkDebugUtilsMessageTypeFlagsEXT messageType,
-                                                         const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-                                                         void* pUserData);
+    static VKAPI_ATTR std::uint32_t VKAPI_CALL debug_callback(
+        VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+        VkDebugUtilsMessageTypeFlagsEXT messageType,
+        const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+        void* pUserData
+    );
 
-    VkResult create_debug_utils_messenger_ext(VkInstance instance,
-                                              const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
-                                              const VkAllocationCallbacks* pAllocator,
-                                              VkDebugUtilsMessengerEXT* pDebugMessenger) noexcept;
+    VkResult create_debug_utils_messenger_ext(
+        VkInstance instance,
+        const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
+        const VkAllocationCallbacks* pAllocator,
+        VkDebugUtilsMessengerEXT* pDebugMessenger
+    ) noexcept;
 
-    void destroy_debug_utils_messenger_ext(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger,
-                                           const VkAllocationCallbacks* pAllocator) noexcept;
+    void destroy_debug_utils_messenger_ext(
+        VkInstance instance,
+        VkDebugUtilsMessengerEXT debugMessenger,
+        const VkAllocationCallbacks* pAllocator
+    ) noexcept;
 
-    // --- Members ---
+  private:
     static constexpr std::array<const char*, 1> m_validationLayers{
         "VK_LAYER_KHRONOS_validation",
     };
@@ -198,8 +219,8 @@ class NOC_EXPORT VulkanDevice
 
     VkCommandPool m_commandPool{};
     bool m_hasMemoryBudgetExtension{false};
-    PFN_vkGetPhysicalDeviceMemoryProperties2 m_getPhysicalDeviceMemoryProperties2{nullptr};
-    PFN_vkGetPhysicalDeviceMemoryProperties2KHR m_getPhysicalDeviceMemoryProperties2KHR{nullptr};
+    PFN_vkGetPhysicalDeviceMemoryProperties2 m_getPhysicalDeviceMemoryProperties2{};
+    PFN_vkGetPhysicalDeviceMemoryProperties2KHR m_getPhysicalDeviceMemoryProperties2KHR{};
     mutable DeviceLocalMemoryBudget m_cachedMemoryBudget{};
     mutable std::chrono::steady_clock::time_point m_lastMemoryBudgetQuery{};
     mutable bool m_hasCachedMemoryBudget{false};

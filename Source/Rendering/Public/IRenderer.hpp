@@ -33,17 +33,21 @@ class NOC_EXPORT IRenderer
 
     /// Upload CPU-side mesh data to GPU buffers. Returns an opaque mesh index.
     /// The MeshData must have been loaded via AssetManager beforehand.
-    virtual Result<uint32_t> upload_mesh(const MeshData& meshData) = 0;
+    virtual Result<std::uint32_t> upload_mesh(const MeshData& meshData) = 0;
 
     /// Upload CPU-side texture data to GPU image. Returns an opaque texture index.
     /// The TextureData must have been loaded via AssetManager beforehand.
-    virtual Result<uint32_t> upload_texture(const TextureData& textureData) = 0;
+    virtual Result<std::uint32_t> upload_texture(const TextureData& textureData) = 0;
 
     /// Create a GPU material from texture indices. Returns an opaque material index.
     /// Texture indices must be valid indices from upload_texture().
-    virtual Result<uint32_t> upload_material(uint32_t albedoTextureIndex, uint32_t normalTextureIndex,
-                                             uint32_t roughnessTextureIndex, uint32_t metallicTextureIndex,
-                                             uint32_t aoTextureIndex) = 0;
+    virtual Result<std::uint32_t> upload_material(
+        std::uint32_t albedoTextureIndex,
+        std::uint32_t normalTextureIndex,
+        std::uint32_t roughnessTextureIndex,
+        std::uint32_t metallicTextureIndex,
+        std::uint32_t aoTextureIndex
+    ) = 0;
 
     /// Set the view and projection matrices for this frame.
     virtual void set_view_projection(const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& proj) noexcept = 0;
@@ -89,6 +93,12 @@ class NOC_EXPORT IRenderer
     /// Set minimum sample shading fraction [0.0, 1.0]. Only used when sample shading is enabled.
     virtual void set_min_sample_shading(float fraction) noexcept = 0;
     virtual float get_min_sample_shading() const noexcept = 0;
+
+    // --- NIS (NVIDIA Image Scaling) ---
+    virtual void set_nis_enabled(bool enabled) noexcept = 0;
+    virtual bool get_nis_enabled() const noexcept = 0;
+    virtual void set_nis_sharpness(float sharpness) noexcept = 0;
+    virtual float get_nis_sharpness() const noexcept = 0;
 
     /// Set render resolution scale (0.25 to 2.0). 1.0 = native resolution.
     virtual void set_render_scale(float scale) noexcept = 0;

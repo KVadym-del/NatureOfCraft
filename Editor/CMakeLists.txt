@@ -26,6 +26,21 @@ foreach(SHADER_SRC ${SHADER_SOURCE_FILES})
     )
 endforeach()
 
+# --- Copy NIS (NVIDIA Image Scaling) shader files to output ---
+
+file(GLOB NIS_SHADER_FILES
+    "${CMAKE_SOURCE_DIR}/Source/ThirdParty/NIS/*.glsl"
+    "${CMAKE_SOURCE_DIR}/Source/ThirdParty/NIS/*.h"
+)
+foreach(NIS_SRC ${NIS_SHADER_FILES})
+    get_filename_component(NIS_NAME ${NIS_SRC} NAME)
+    add_custom_command(TARGET Editor POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Editor>/Resources/NIS"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NIS_SRC} "$<TARGET_FILE_DIR:Editor>/Resources/NIS/${NIS_NAME}"
+        COMMENT "Copying NIS shader: ${NIS_NAME}"
+    )
+endforeach()
+
 # --- Copy runtime assets ---
 
 add_custom_command(TARGET Editor POST_BUILD

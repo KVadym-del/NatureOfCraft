@@ -12,10 +12,10 @@ using namespace DirectX;
 
 struct Vertex
 {
-    XMFLOAT3 pos;
-    XMFLOAT3 normal;
-    XMFLOAT2 texCoord;
-    XMFLOAT4 tangent; // xyz = tangent direction, w = bitangent handedness (+1 or -1)
+    XMFLOAT3 pos{};
+    XMFLOAT3 normal{};
+    XMFLOAT2 texCoord{};
+    XMFLOAT4 tangent{}; // xyz = tangent direction, w = bitangent handedness (+1 or -1)
 
     static VkVertexInputBindingDescription getBindingDescription()
     {
@@ -64,30 +64,30 @@ struct Vertex
 
 struct Mesh
 {
-    VkBuffer vertexBuffer{VK_NULL_HANDLE};
-    VkDeviceMemory vertexBufferMemory{VK_NULL_HANDLE};
-    VkBuffer indexBuffer{VK_NULL_HANDLE};
-    VkDeviceMemory indexBufferMemory{VK_NULL_HANDLE};
-    uint32_t indexCount{};
-    XMFLOAT3 boundsCenter{0.0f, 0.0f, 0.0f};
-    float boundsRadius{0.0f};
-    VkDeviceSize vertexBufferBytes{0};
-    VkDeviceSize indexBufferBytes{0};
-    VkDeviceSize vertexBufferAllocationBytes{0};
-    VkDeviceSize indexBufferAllocationBytes{0};
+    VkBuffer vertexBuffer{};
+    VkDeviceMemory vertexBufferMemory{};
+    VkBuffer indexBuffer{};
+    VkDeviceMemory indexBufferMemory{};
+    std::uint32_t indexCount{};
+    XMFLOAT3 boundsCenter{};
+    float boundsRadius{};
+    VkDeviceSize vertexBufferBytes{};
+    VkDeviceSize indexBufferBytes{};
+    VkDeviceSize vertexBufferAllocationBytes{};
+    VkDeviceSize indexBufferAllocationBytes{};
 };
 
 struct GpuTexture
 {
-    VkImage image{VK_NULL_HANDLE};
-    VkDeviceMemory memory{VK_NULL_HANDLE};
-    VkImageView imageView{VK_NULL_HANDLE};
-    uint32_t width{0};
-    uint32_t height{0};
-    VkDeviceSize allocationBytes{0};
+    VkImage image{};
+    VkDeviceMemory memory{};
+    VkImageView imageView{};
+    std::uint32_t width{};
+    std::uint32_t height{};
+    VkDeviceSize allocationBytes{};
 };
 
 struct GpuMaterial
 {
-    VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
+    VkDescriptorSet descriptorSet{};
 };

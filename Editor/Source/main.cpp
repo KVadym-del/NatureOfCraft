@@ -1182,6 +1182,8 @@ int main()
         bool alphaToCoverage{false};
         bool sampleShading{false};
         float minSampleShading{0.30f};
+        bool nisEnabled{false};
+        float nisSharpness{0.5f};
         bool initialized{false};
         bool dirty{false};
         bool autoApply{true};
@@ -1194,8 +1196,8 @@ int main()
     char assetFilterBuf[256] = "";
     bool requestDefaultDockLayout{true};
 
-    VkDescriptorSet viewportDescriptorSet{VK_NULL_HANDLE};
-    VkImageView viewportDescriptorImageView{VK_NULL_HANDLE};
+    VkDescriptorSet viewportDescriptorSet{nullptr};
+    VkImageView viewportDescriptorImageView{nullptr};
     bool viewportHovered{false};
     ViewportAspectMode viewportAspectMode{ViewportAspectMode::Free};
 
@@ -1223,18 +1225,18 @@ int main()
 
     auto refresh_viewport_texture = [&]() {
         const VkImageView sceneView = vulkan.get_scene_color_image_view();
-        if (sceneView == viewportDescriptorImageView && viewportDescriptorSet != VK_NULL_HANDLE)
+        if (sceneView == viewportDescriptorImageView && viewportDescriptorSet != nullptr)
             return;
 
-        if (viewportDescriptorSet != VK_NULL_HANDLE)
+        if (viewportDescriptorSet != nullptr)
         {
             renderer.wait_idle();
             ImGui_ImplVulkan_RemoveTexture(viewportDescriptorSet);
-            viewportDescriptorSet = VK_NULL_HANDLE;
+            viewportDescriptorSet = nullptr;
         }
 
         viewportDescriptorImageView = sceneView;
-        if (sceneView != VK_NULL_HANDLE)
+        if (sceneView != nullptr)
         {
             viewportDescriptorSet =
                 ImGui_ImplVulkan_AddTexture(vulkan.get_sampler(), sceneView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -1242,13 +1244,13 @@ int main()
     };
 
     auto release_viewport_texture = [&]() {
-        if (viewportDescriptorSet != VK_NULL_HANDLE)
+        if (viewportDescriptorSet != nullptr)
         {
             renderer.wait_idle();
             ImGui_ImplVulkan_RemoveTexture(viewportDescriptorSet);
-            viewportDescriptorSet = VK_NULL_HANDLE;
+            viewportDescriptorSet = nullptr;
         }
-        viewportDescriptorImageView = VK_NULL_HANDLE;
+        viewportDescriptorImageView = nullptr;
     };
 
     auto sync_graphics_draft_from_runtime = [&]() {
@@ -1258,6 +1260,8 @@ int main()
         graphicsDraft.alphaToCoverage = renderer.get_alpha_to_coverage();
         graphicsDraft.sampleShading = renderer.get_sample_shading();
         graphicsDraft.minSampleShading = renderer.get_min_sample_shading();
+        graphicsDraft.nisEnabled = renderer.get_nis_enabled();
+        graphicsDraft.nisSharpness = renderer.get_nis_sharpness();
         graphicsDraft.initialized = true;
         graphicsDraft.dirty = false;
     };
@@ -1548,6 +1552,8 @@ int main()
                     renderer.set_alpha_to_coverage(graphicsDraft.alphaToCoverage);
                     renderer.set_sample_shading(graphicsDraft.sampleShading);
                     renderer.set_min_sample_shading(graphicsDraft.minSampleShading);
+                    renderer.set_nis_enabled(graphicsDraft.nisEnabled);
+                    renderer.set_nis_sharpness(graphicsDraft.nisSharpness);
                     renderer.set_render_scale(graphicsDraft.renderScale);
                     renderer.set_vsync(graphicsDraft.presentMode);
                     refresh_viewport_texture();
@@ -1998,7 +2004,7 @@ int main()
                             }
                         }
 
-                        if (viewportDescriptorSet != VK_NULL_HANDLE)
+                        if (viewportDescriptorSet != nullptr)
                         {
                             ImGui::Image(reinterpret_cast<ImTextureID>(viewportDescriptorSet), imageSize, ImVec2(0, 0),
                                          ImVec2(1, 1));
@@ -2175,6 +2181,27 @@ int main()
                         if (graphicsDraft.renderScale > 1.0f)
                             ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "SSAA active (Render Scale > 1.0). MSAA locked to Off.");
 
+                        // NIS (NVIDIA Image Scaling)
+                        ImGui::Spacing();
+                        ImGui::SeparatorText("NVIDIA Image Scaling (NIS)");
+                        bool nisChanged = ImGui::Checkbox("Enable NIS Sharpening", &graphicsDraft.nisEnabled);
+                        if (nisChanged)
+                            graphicsDraft.dirty = true;
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("NVIDIA Image Scaling — applies directional spatial\nsharpening to the rendered image. Works on any GPU.");
+
+                        if (!graphicsDraft.nisEnabled)
+                            ImGui::BeginDisabled();
+                        bool nisSharpnessChanged = ImGui::SliderFloat(
+                            "NIS Sharpness", &graphicsDraft.nisSharpness, 0.0f, 1.0f, "%.2f");
+                        const bool nisSharpnessReleased = ImGui::IsItemDeactivatedAfterEdit();
+                        if (nisSharpnessChanged)
+                            graphicsDraft.dirty = true;
+                        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                            ImGui::SetTooltip("Controls sharpening intensity.\n0.0 = minimal, 0.5 = balanced, 1.0 = maximum.");
+                        if (!graphicsDraft.nisEnabled)
+                            ImGui::EndDisabled();
+
                         // Present mode
                         bool presentModeChanged = false;
                         std::int32_t selected = static_cast<std::int32_t>(graphicsDraft.presentMode);
@@ -2207,7 +2234,7 @@ int main()
                             // Apply MSAA/present/A2C/sample-shading changes immediately, but only apply render scale
                             // and min sample shading when the slider interaction is committed (release/enter).
                             if (msaaChanged || presentModeChanged || a2cChanged || sampleShadingChanged
-                                || renderScaleReleased || minSampleReleased)
+                                || renderScaleReleased || minSampleReleased || nisChanged || nisSharpnessReleased)
                                 graphicsApplyRequested = true;
                         }
 

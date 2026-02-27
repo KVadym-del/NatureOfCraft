@@ -34,8 +34,12 @@ class NOC_EXPORT VulkanPipeline
     /// @param msConfig     Multisampling configuration (sample count, A2C, sample shading).
     /// @param vertSpirv    Compiled vertex shader SPIR-V (uint32_t words).
     /// @param fragSpirv    Compiled fragment shader SPIR-V (uint32_t words).
-    Result<> initialize(VkRenderPass renderPass, const MultisampleConfig& msConfig,
-                        const std::vector<uint32_t>& vertSpirv, const std::vector<uint32_t>& fragSpirv);
+    Result<> initialize(
+        VkRenderPass renderPass,
+        const MultisampleConfig& msConfig,
+        const std::vector<std::uint32_t>& vertSpirv, 
+        const std::vector<std::uint32_t>& fragSpirv
+    );
 
     /// Destroys pipeline and pipeline layout.
     void cleanup() noexcept;
@@ -58,7 +62,7 @@ class NOC_EXPORT VulkanPipeline
     }
 
   private:
-    Result<VkShaderModule> create_shader_module(const std::vector<uint32_t>& spirv) noexcept;
+    Result<VkShaderModule> create_shader_module(const std::vector<std::uint32_t>& spirv) noexcept;
 
     // --- Members ---
     VulkanDevice& m_device;

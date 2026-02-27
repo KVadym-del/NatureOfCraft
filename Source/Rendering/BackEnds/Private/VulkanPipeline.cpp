@@ -11,12 +11,16 @@ VulkanPipeline::~VulkanPipeline()
     release_cache();
 }
 
-Result<> VulkanPipeline::initialize(VkRenderPass renderPass, const MultisampleConfig& msConfig,
-                                    const std::vector<uint32_t>& vertSpirv, const std::vector<uint32_t>& fragSpirv)
+Result<> VulkanPipeline::initialize(
+    VkRenderPass renderPass,
+    const MultisampleConfig& msConfig,
+    const std::vector<std::uint32_t>& vertSpirv,
+    const std::vector<std::uint32_t>& fragSpirv
+)
 {
     VkDevice device = m_device.get_device();
 
-    if (m_pipelineCache == VK_NULL_HANDLE)
+    if (m_pipelineCache == nullptr)
     {
         VkPipelineCacheCreateInfo pipelineCacheInfo{};
         pipelineCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
@@ -68,12 +72,12 @@ Result<> VulkanPipeline::initialize(VkRenderPass renderPass, const MultisampleCo
     bindingDescriptions[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 
     std::array<VkVertexInputAttributeDescription, 12> attributeDescriptions{};
-    for (size_t i = 0; i < vertexAttributeDescriptions.size(); ++i)
+    for (std::size_t i = 0; i < vertexAttributeDescriptions.size(); ++i)
         attributeDescriptions[i] = vertexAttributeDescriptions[i];
 
-    const uint32_t vec4Size = sizeof(float) * 4;
+    const std::uint32_t vec4Size = sizeof(float) * 4;
     // mvp rows (locations 4..7)
-    for (uint32_t i = 0; i < 4; ++i)
+    for (std::uint32_t i = 0; i < 4; ++i)
     {
         attributeDescriptions[4 + i].binding = 1;
         attributeDescriptions[4 + i].location = 4 + i;
@@ -81,7 +85,7 @@ Result<> VulkanPipeline::initialize(VkRenderPass renderPass, const MultisampleCo
         attributeDescriptions[4 + i].offset = vec4Size * i;
     }
     // model rows (locations 8..11)
-    for (uint32_t i = 0; i < 4; ++i)
+    for (std::uint32_t i = 0; i < 4; ++i)
     {
         attributeDescriptions[8 + i].binding = 1;
         attributeDescriptions[8 + i].location = 8 + i;
@@ -91,9 +95,9 @@ Result<> VulkanPipeline::initialize(VkRenderPass renderPass, const MultisampleCo
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputInfo.vertexBindingDescriptionCount = static_cast<uint32_t>(bindingDescriptions.size());
+    vertexInputInfo.vertexBindingDescriptionCount = static_cast<std::uint32_t>(bindingDescriptions.size());
     vertexInputInfo.pVertexBindingDescriptions = bindingDescriptions.data();
-    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(attributeDescriptions.size());
     vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
@@ -151,12 +155,12 @@ Result<> VulkanPipeline::initialize(VkRenderPass renderPass, const MultisampleCo
 
     VkPipelineDynamicStateCreateInfo dynamicState{};
     dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+    dynamicState.dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size());
     dynamicState.pDynamicStates = dynamicStates.data();
 
     // Descriptor set layout: binding 0 = albedo, 1 = normal, 2 = roughness, 3 = metallic, 4 = AO
     std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
-    for (uint32_t i = 0; i < 5; ++i)
+    for (std::uint32_t i = 0; i < 5; ++i)
     {
         bindings[i].binding = i;
         bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -167,15 +171,17 @@ Result<> VulkanPipeline::initialize(VkRenderPass renderPass, const MultisampleCo
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+    layoutInfo.bindingCount = static_cast<std::uint32_t>(bindings.size());
     layoutInfo.pBindings = bindings.data();
 
     if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_descriptorSetLayout) != VK_SUCCESS)
     {
         vkDestroyShaderModule(device, fragShaderModule, nullptr);
         vkDestroyShaderModule(device, vertShaderModule, nullptr);
-        return make_error("Failed to create descriptor set layout",
-                          ErrorCode::VulkanGraphicsPipelineLayoutCreationFailed);
+        return make_error(
+            "Failed to create descriptor set layout",
+            ErrorCode::VulkanGraphicsPipelineLayoutCreationFailed
+        );
     }
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
@@ -226,46 +232,46 @@ void VulkanPipeline::cleanup() noexcept
 {
     VkDevice device = m_device.get_device();
 
-    if (m_graphicsPipeline != VK_NULL_HANDLE)
+    if (m_graphicsPipeline != nullptr)
     {
         vkDestroyPipeline(device, m_graphicsPipeline, nullptr);
-        m_graphicsPipeline = VK_NULL_HANDLE;
+        m_graphicsPipeline = nullptr;
     }
-    if (m_pipelineLayout != VK_NULL_HANDLE)
+    if (m_pipelineLayout != nullptr)
     {
         vkDestroyPipelineLayout(device, m_pipelineLayout, nullptr);
-        m_pipelineLayout = VK_NULL_HANDLE;
+        m_pipelineLayout = nullptr;
     }
-    if (m_descriptorSetLayout != VK_NULL_HANDLE)
+    if (m_descriptorSetLayout != nullptr)
     {
         vkDestroyDescriptorSetLayout(device, m_descriptorSetLayout, nullptr);
-        m_descriptorSetLayout = VK_NULL_HANDLE;
+        m_descriptorSetLayout = nullptr;
     }
 }
 
 void VulkanPipeline::release_cache() noexcept
 {
     VkDevice device = m_device.get_device();
-    if (device == VK_NULL_HANDLE)
+    if (device == nullptr)
     {
-        m_pipelineCache = VK_NULL_HANDLE;
+        m_pipelineCache = nullptr;
         return;
     }
 
-    if (m_pipelineCache != VK_NULL_HANDLE)
+    if (m_pipelineCache != nullptr)
     {
         vkDestroyPipelineCache(device, m_pipelineCache, nullptr);
-        m_pipelineCache = VK_NULL_HANDLE;
+        m_pipelineCache = nullptr;
     }
 }
 
-Result<VkShaderModule> VulkanPipeline::create_shader_module(const std::vector<uint32_t>& spirv) noexcept
+Result<VkShaderModule> VulkanPipeline::create_shader_module(const std::vector<std::uint32_t>& spirv) noexcept
 {
     VkDevice device = m_device.get_device();
 
     VkShaderModuleCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    createInfo.codeSize = spirv.size() * sizeof(uint32_t);
+    createInfo.codeSize = spirv.size() * sizeof(std::uint32_t);
     createInfo.pCode = spirv.data();
 
     VkShaderModule shaderModule;
