@@ -9,6 +9,7 @@ find_package(EnTT CONFIG REQUIRED)
 find_package(flatbuffers CONFIG REQUIRED)
 find_package(Stb REQUIRED)
 find_package(unofficial-shaderc CONFIG REQUIRED)
+find_package(Jolt CONFIG REQUIRED)
 find_path(SOL2_INCLUDE_DIRS "sol/abort.hpp")
 find_path(LUAJIT_INCLUDE_DIR luajit.h PATH_SUFFIXES luajit)
 find_library(LUAJIT_LIBRARY NAMES lua51)
@@ -49,6 +50,10 @@ file(GLOB_RECURSE SOURCE_FILES
 )
 
 list(APPEND SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/ufbx/ufbx.c")
+list(APPEND SOURCE_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/Physics/Private/PhysicsWorld.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Physics/Public/PhysicsWorld.hpp"
+)
 
 set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/ufbx/ufbx.c" PROPERTIES LANGUAGE CXX)
 
@@ -80,6 +85,7 @@ target_link_libraries(Source PUBLIC
     Taskflow::Taskflow
     EnTT::EnTT
     flatbuffers::flatbuffers
+    Jolt::Jolt
 )
 
 target_link_libraries(Source PRIVATE

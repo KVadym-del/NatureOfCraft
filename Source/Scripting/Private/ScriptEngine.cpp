@@ -17,7 +17,7 @@
 #include <unordered_map>
 #include <vector>
 
-// ── Entity wrapper for Lua ────────────────────────────────────────────
+//    Entity wrapper for Lua                                             
 // Provides a safe, limited view of an entity to Lua scripts.
 
 struct LuaEntity
@@ -58,7 +58,7 @@ struct LuaEntity
     }
 };
 
-// ── Pimpl implementation ──────────────────────────────────────────────
+//    Pimpl implementation                                               
 
 struct ScriptEngine::Impl
 {
@@ -88,7 +88,7 @@ struct ScriptEngine::Impl
     }
 };
 
-// ── Constructor / destructor / move ───────────────────────────────────
+//    Constructor / destructor / move                                    
 
 ScriptEngine::ScriptEngine() : m_impl(std::make_unique<Impl>())
 {}
@@ -102,7 +102,7 @@ ScriptEngine::~ScriptEngine()
 ScriptEngine::ScriptEngine(ScriptEngine&&) noexcept = default;
 ScriptEngine& ScriptEngine::operator=(ScriptEngine&&) noexcept = default;
 
-// ── initialize ────────────────────────────────────────────────────────
+//    initialize                                                         
 
 Result<> ScriptEngine::initialize()
 {
@@ -147,7 +147,7 @@ Result<> ScriptEngine::initialize()
         fmt::print("[Lua] {}\n", msg);
     });
 
-    // ── Register Vec3 ─────────────────────────────────────────────────
+    //    Register Vec3                                                  
 
     lua.new_usertype<LuaVec3>(
         "Vec3", sol::constructors<LuaVec3(), LuaVec3(float, float, float)>(), "x", &LuaVec3::x, "y", &LuaVec3::y, "z",
@@ -156,7 +156,7 @@ Result<> ScriptEngine::initialize()
         &LuaVec3::operator*, sol::meta_function::unary_minus, sol::resolve<LuaVec3() const>(&LuaVec3::operator-),
         "length", &LuaVec3::length, "normalized", &LuaVec3::normalized, "dot", &LuaVec3::dot, "cross", &LuaVec3::cross);
 
-    // ── Register Transform ────────────────────────────────────────────
+    //    Register Transform                                             
     // Lua gets a pointer to the actual TransformComponent on the entity,
     // so mutations in Lua directly affect the C++ side.
 
@@ -175,7 +175,7 @@ Result<> ScriptEngine::initialize()
         "set_rotation_euler",
         [](TransformComponent& t, float pitch, float yaw, float roll) { t.set_rotation_euler(pitch, yaw, roll); });
 
-    // ── Register Entity ───────────────────────────────────────────────
+    //    Register Entity                                                
 
     lua.new_usertype<LuaEntity>("Entity", sol::no_constructor, "name", &LuaEntity::name, "transform",
                                 &LuaEntity::transform, "has_mesh", &LuaEntity::has_mesh, "id", &LuaEntity::id, "valid",
@@ -185,14 +185,14 @@ Result<> ScriptEngine::initialize()
     return {};
 }
 
-// ── set_script_root ───────────────────────────────────────────────────
+//    set_script_root                                                    
 
 void ScriptEngine::set_script_root(const std::filesystem::path& root)
 {
     m_impl->scriptRoot = root;
 }
 
-// ── load_script ───────────────────────────────────────────────────────
+//    load_script                                                        
 
 Result<> ScriptEngine::load_script(World& world, entt::entity entity)
 {
@@ -235,7 +235,7 @@ Result<> ScriptEngine::load_script(World& world, entt::entity entity)
     return {};
 }
 
-// ── update ────────────────────────────────────────────────────────────
+//    update                                                             
 
 void ScriptEngine::update(World& world, float dt)
 {
@@ -317,7 +317,7 @@ void ScriptEngine::update(World& world, float dt)
         world.mark_transforms_dirty();
 }
 
-// ── on_entity_destroyed ───────────────────────────────────────────────
+//    on_entity_destroyed                                                
 
 void ScriptEngine::on_entity_destroyed(World& world, entt::entity entity)
 {
@@ -404,7 +404,7 @@ void ScriptEngine::on_world_destroyed(World& world)
     }
 }
 
-// ── reload_script ─────────────────────────────────────────────────────
+//    reload_script                                                      
 
 Result<> ScriptEngine::reload_script(World& world, entt::entity entity)
 {
@@ -422,7 +422,7 @@ Result<> ScriptEngine::reload_script(World& world, entt::entity entity)
     return load_script(world, entity);
 }
 
-// ── shutdown ──────────────────────────────────────────────────────────
+//    shutdown                                                           
 
 void ScriptEngine::shutdown()
 {

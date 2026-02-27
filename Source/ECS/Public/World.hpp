@@ -17,7 +17,7 @@ class NOC_EXPORT World
   public:
     World() = default;
 
-    // ── Entity lifecycle ──────────────────────────────────────────────
+    //    Entity lifecycle                                               
 
     /// Creates a new entity with Name, Transform, Hierarchy, and WorldMatrixCache.
     entt::entity create_entity(std::string name = "");
@@ -26,7 +26,7 @@ class NOC_EXPORT World
     /// Removes itself from its parent's children list before destruction.
     void destroy_entity(entt::entity entity);
 
-    // ── Hierarchy management ──────────────────────────────────────────
+    //    Hierarchy management                                           
 
     /// Sets `parent` as the parent of `child`.
     /// If `child` already has a parent, it is removed from the old parent first.
@@ -38,7 +38,7 @@ class NOC_EXPORT World
     /// Returns all root-level entities (those with parent == entt::null).
     const std::vector<entt::entity>& get_root_entities();
 
-    // ── Systems (per-frame) ───────────────────────────────────────────
+    //    Systems (per-frame)                                            
 
     /// Recomputes WorldMatrixCache for every entity from root to leaf.
     void update_world_matrices();
@@ -59,7 +59,7 @@ class NOC_EXPORT World
     /// Returns the first entity whose CameraComponent has isActive == true, or entt::null.
     entt::entity get_active_camera();
 
-    // ── Registry access ───────────────────────────────────────────────
+    //    Registry access                                                
 
     entt::registry& registry() noexcept
     {

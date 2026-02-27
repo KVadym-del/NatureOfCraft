@@ -17,7 +17,7 @@ layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265359;
 
-// ── PBR BRDF Functions ──────────────────────────────────────────────
+//    PBR BRDF Functions                                               
 
 float distributionGGX(vec3 N, vec3 H, float roughness) {
     float a  = roughness * roughness;
@@ -49,7 +49,7 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
-// ── Main ─────────────────────────────────────────────────────────────
+//    Main                                                              
 
 void main() {
     // Sample PBR textures
@@ -70,7 +70,7 @@ void main() {
     // Dielectrics ≈ 0.04, metals use albedo color
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
 
-    // ── Lighting ─────────────────────────────────────────────────────
+    //    Lighting                                                      
     vec3 Lo = vec3(0.0);
 
     // Directional light (sun)

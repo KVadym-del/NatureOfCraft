@@ -690,7 +690,7 @@ Result<std::shared_ptr<ModelData>> ModelLoader::parse_fbx(const std::filesystem:
     return model;
 }
 
-// ── Binary cache (.noc_model) ─────────────────────────────────────────
+//    Binary cache (.noc_model)                                          
 
 namespace fb = NatureOfCraft::Assets;
 

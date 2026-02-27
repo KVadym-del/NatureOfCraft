@@ -120,3 +120,25 @@ struct ScriptComponent
     std::string scriptPath;  // project-relative path, e.g. "Assets/Scripts/spin.lua"
     bool initialized{false}; // has on_start() been called?
 };
+
+enum class PhysicsBodyMotionType : std::uint8_t
+{
+    Static = 0,
+    Dynamic = 1,
+    Kinematic = 2,
+};
+
+struct PhysicsBodyComponent
+{
+    bool enabled{true};
+    PhysicsBodyMotionType motionType{PhysicsBodyMotionType::Dynamic};
+    DirectX::XMFLOAT3 halfExtents{0.5f, 0.5f, 0.5f};
+    float friction{0.5f};
+    float restitution{0.0f};
+    bool useGravity{true};
+    float linearDamping{0.05f};
+    float angularDamping{0.05f};
+
+    bool runtimeDirty{true};
+    bool runtimeInitialized{false};
+};

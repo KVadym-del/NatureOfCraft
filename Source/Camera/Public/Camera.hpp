@@ -27,7 +27,7 @@ class NOC_EXPORT OrbitCameraController
     /// Returns true if the controller is attached to a valid entity.
     bool is_attached() const noexcept;
 
-    // ── Input actions ─────────────────────────────────────────────────
+    //    Input actions                                                  
 
     /// Rotates the camera around the target by delta pixels/units.
     void rotate(float deltaYaw, float deltaPitch) noexcept;
@@ -38,7 +38,7 @@ class NOC_EXPORT OrbitCameraController
     /// Pans the camera target in the view-local right/up plane.
     void pan(float deltaRight, float deltaUp) noexcept;
 
-    // ── Matrix computation ────────────────────────────────────────────
+    //    Matrix computation                                             
 
     /// Returns the view matrix (right-handed look-at).
     DirectX::XMMATRIX get_view_matrix() const noexcept;
@@ -49,7 +49,7 @@ class NOC_EXPORT OrbitCameraController
     /// Returns the world-space eye position.
     DirectX::XMFLOAT3 get_eye_position() const noexcept;
 
-    // ── Tuning parameters ─────────────────────────────────────────────
+    //    Tuning parameters                                              
 
     void set_rotation_speed(float speed) noexcept
     {

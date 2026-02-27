@@ -23,7 +23,7 @@ class NOC_EXPORT Project
   public:
     Project() = default;
 
-    // ── Factories ──────────────────────────────────────────────────────
+    //    Factories                                                       
 
     /// Creates a new empty project at the given root path.
     /// Also creates the project directory and asset sub-directory on disk if they don't exist.
@@ -32,12 +32,12 @@ class NOC_EXPORT Project
     /// Loads a project from a .noc_project file.
     static Result<Project> load(const std::string& projectFilePath);
 
-    // ── Persistence ────────────────────────────────────────────────────
+    //    Persistence                                                     
 
     /// Saves the project manifest to its .noc_project file.
     Result<> save();
 
-    // ── Level management ───────────────────────────────────────────────
+    //    Level management                                                
 
     /// Adds a level entry to the project.
     void add_level(std::string name, std::string relativePath);
@@ -51,7 +51,7 @@ class NOC_EXPORT Project
         return m_levels;
     }
 
-    // ── Accessors ──────────────────────────────────────────────────────
+    //    Accessors                                                       
 
     const std::string& name() const noexcept
     {

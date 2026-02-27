@@ -85,7 +85,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Resources/scripts")
     )
 endif()
 
-# ── Self-contained release bundle ──────────────────────────────────────
+#    Self-contained release bundle                                       
 # Usage: cmake --build <build-dir> --target Bundle
 # Output: <build-dir>/bundle/NatureOfCraft/
 

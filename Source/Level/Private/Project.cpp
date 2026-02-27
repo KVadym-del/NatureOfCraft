@@ -12,7 +12,7 @@
 namespace fb = flatbuffers;
 namespace fbp = NatureOfCraft::Project;
 
-// ── Factories ────────────────────────────────────────────────────────
+//    Factories                                                         
 
 Result<Project> Project::create_new(std::string name, std::string rootPath)
 {
@@ -121,7 +121,7 @@ Result<Project> Project::load(const std::string& projectFilePath)
     return project;
 }
 
-// ── Persistence ──────────────────────────────────────────────────────
+//    Persistence                                                       
 
 Result<> Project::save()
 {
@@ -155,7 +155,7 @@ Result<> Project::save()
     return {};
 }
 
-// ── Level management ─────────────────────────────────────────────────
+//    Level management                                                  
 
 void Project::add_level(std::string name, std::string relativePath)
 {
@@ -168,7 +168,7 @@ void Project::remove_level(size_t index)
         m_levels.erase(m_levels.begin() + static_cast<ptrdiff_t>(index));
 }
 
-// ── Accessors ────────────────────────────────────────────────────────
+//    Accessors                                                         
 
 std::string Project::get_absolute_path(const std::filesystem::path& relativePath) const
 {

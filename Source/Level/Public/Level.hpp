@@ -14,7 +14,7 @@ class NOC_EXPORT Level
   public:
     Level() = default;
 
-    // ── Factories ──────────────────────────────────────────────────────
+    //    Factories                                                       
 
     /// Creates a new empty level with a default active camera entity.
     static Level create_new(std::string name);
@@ -22,7 +22,7 @@ class NOC_EXPORT Level
     /// Loads a level from a .noc_level binary file.
     static Result<Level> load(const std::string& filePath);
 
-    // ── Persistence ────────────────────────────────────────────────────
+    //    Persistence                                                     
 
     /// Saves the level to its current file path. Fails if no path is set.
     Result<> save();
@@ -30,7 +30,7 @@ class NOC_EXPORT Level
     /// Saves the level to the given file path and updates the stored path.
     Result<> save_as(const std::string& filePath);
 
-    // ── Accessors ──────────────────────────────────────────────────────
+    //    Accessors                                                       
 
     World& world() noexcept
     {

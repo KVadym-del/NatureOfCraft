@@ -1,6 +1,6 @@
 namespace NatureOfCraft.Level;
 
-// ── Inlined math types (avoids cross-schema include issues) ─────────
+//    Inlined math types (avoids cross-schema include issues)          
 
 struct Vec3 {
     x: float;
@@ -15,7 +15,7 @@ struct Vec4 {
     w: float;
 }
 
-// ── Transform ───────────────────────────────────────────────────────
+//    Transform                                                        
 
 table TransformData {
     position: Vec3;
@@ -23,7 +23,7 @@ table TransformData {
     scale: Vec3;
 }
 
-// ── Component data ──────────────────────────────────────────────────
+//    Component data                                                   
 
 table MeshComponentData {
     mesh_index: int32 = -1;
@@ -47,7 +47,18 @@ table ScriptComponentData {
     script_path: string;
 }
 
-// ── Entity ──────────────────────────────────────────────────────────
+table PhysicsBodyComponentData {
+    enabled: bool = true;
+    motion_type: uint8 = 1; // 0=Static, 1=Dynamic, 2=Kinematic
+    half_extents: Vec3;
+    friction: float = 0.5;
+    restitution: float = 0.0;
+    use_gravity: bool = true;
+    linear_damping: float = 0.05;
+    angular_damping: float = 0.05;
+}
+
+//    Entity                                                           
 
 table EntityData {
     name: string;
@@ -55,10 +66,11 @@ table EntityData {
     mesh: MeshComponentData;         // null if entity has no mesh
     camera: CameraComponentData;     // null if entity has no camera
     script: ScriptComponentData;     // null if entity has no script
+    physics: PhysicsBodyComponentData;
     children: [EntityData];          // recursive hierarchy
 }
 
-// ── Level root ──────────────────────────────────────────────────────
+//    Level root                                                       
 
 table LevelAsset {
     name: string;

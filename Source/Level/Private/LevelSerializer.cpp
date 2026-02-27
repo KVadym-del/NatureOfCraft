@@ -6,12 +6,13 @@
 #include <fmt/core.h>
 
 #include <fstream>
+#include <cstdint>
 #include <set>
 
 namespace fb = flatbuffers;
 namespace fbl = NatureOfCraft::Level;
 
-// ── Serialize helpers ────────────────────────────────────────────────
+//    Serialize helpers                                                 
 
 /// Recursively serializes an entity and its children into the FlatBufferBuilder.
 static fb::Offset<fbl::EntityData> serialize_entity(fb::FlatBufferBuilder& fbb, const World& world, entt::entity entity)
@@ -58,6 +59,17 @@ static fb::Offset<fbl::EntityData> serialize_entity(fb::FlatBufferBuilder& fbb, 
             scriptOffset = fbl::CreateScriptComponentDataDirect(fbb, sc->scriptPath.c_str());
     }
 
+    // Physics component (optional)
+    fb::Offset<fbl::PhysicsBodyComponentData> physicsOffset = 0;
+    if (const auto* pc = reg.try_get<PhysicsBodyComponent>(entity))
+    {
+        fbl::Vec3 halfExtents(pc->halfExtents.x, pc->halfExtents.y, pc->halfExtents.z);
+        physicsOffset =
+            fbl::CreatePhysicsBodyComponentData(fbb, pc->enabled, static_cast<std::uint8_t>(pc->motionType),
+                                                &halfExtents, pc->friction, pc->restitution, pc->useGravity,
+                                                pc->linearDamping, pc->angularDamping);
+    }
+
     // Children (recursive)
     fb::Offset<fb::Vector<fb::Offset<fbl::EntityData>>> childrenOffset = 0;
     if (const auto* hc = reg.try_get<HierarchyComponent>(entity))
@@ -75,7 +87,7 @@ static fb::Offset<fbl::EntityData> serialize_entity(fb::FlatBufferBuilder& fbb, 
     }
 
     return fbl::CreateEntityData(fbb, nameOffset, transformOffset, meshOffset, cameraOffset, scriptOffset,
-                                 childrenOffset);
+                                 physicsOffset, childrenOffset);
 }
 
 /// Collects all unique asset paths from MeshComponents and ScriptComponents for the referenced_assets list.
@@ -99,7 +111,7 @@ static std::vector<std::string> collect_referenced_assets(const World& world)
     return {assetPaths.begin(), assetPaths.end()};
 }
 
-// ── Deserialize helpers ──────────────────────────────────────────────
+//    Deserialize helpers                                               
 
 /// Recursively deserializes an entity from FlatBuffers into the World.
 /// Returns the created entity. If parentEntity != entt::null, sets the parent.
@@ -152,6 +164,23 @@ static entt::entity deserialize_entity(World& world, const fbl::EntityData* data
         sc.scriptPath = sd->script_path() ? sd->script_path()->str() : "";
     }
 
+    // Physics component
+    if (const auto* pd = data->physics())
+    {
+        auto& pc = world.registry().emplace<PhysicsBodyComponent>(entity);
+        pc.enabled = pd->enabled();
+        pc.motionType = static_cast<PhysicsBodyMotionType>(pd->motion_type());
+        if (pd->half_extents())
+            pc.halfExtents = {pd->half_extents()->x(), pd->half_extents()->y(), pd->half_extents()->z()};
+        pc.friction = pd->friction();
+        pc.restitution = pd->restitution();
+        pc.useGravity = pd->use_gravity();
+        pc.linearDamping = pd->linear_damping();
+        pc.angularDamping = pd->angular_damping();
+        pc.runtimeDirty = true;
+        pc.runtimeInitialized = false;
+    }
+
     // Set parent
     if (parentEntity != entt::null)
         world.set_parent(entity, parentEntity);
@@ -168,7 +197,7 @@ static entt::entity deserialize_entity(World& world, const fbl::EntityData* data
     return entity;
 }
 
-// ── Public API ───────────────────────────────────────────────────────
+//    Public API                                                        
 
 Result<std::vector<uint8_t>> LevelSerializer::serialize(const World& world, const std::string& levelName)
 {

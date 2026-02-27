@@ -7,7 +7,7 @@
 #include <fmt/core.h>
 #include <shaderc/shaderc.hpp>
 
-// ── Public API ───────────────────────────────────────────────────────
+//    Public API                                                        
 
 Result<std::vector<std::uint32_t>> ShaderCompiler::compile(
     std::string_view glslSource,
@@ -126,7 +126,7 @@ std::filesystem::path ShaderCompiler::get_spv_path(const std::filesystem::path& 
     return result;
 }
 
-// ── Private helpers ──────────────────────────────────────────────────
+//    Private helpers                                                   
 
 Result<ShaderStage> ShaderCompiler::detect_stage(const std::filesystem::path& glslPath)
 {

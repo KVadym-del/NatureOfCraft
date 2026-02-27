@@ -8,6 +8,7 @@
 #include <ECS/Public/Components.hpp>
 #include <Level/Public/Level.hpp>
 #include <Level/Public/Project.hpp>
+#include <Physics/Public/PhysicsWorld.hpp>
 #include <Rendering/BackEnds/Public/Vulkan.hpp>
 #include <Scripting/Public/ScriptEngine.hpp>
 #include <Window/Public/Window.hpp>
@@ -36,12 +37,12 @@
 #include <unordered_map>
 #include <vector>
 
-// ── Constants ─────────────────────────────────────────────────────────
+//  Constants 
 
 constexpr static std::uint32_t WIDTH{800};
 constexpr static std::uint32_t HEIGHT{600};
 
-// ── Editor state machine ──────────────────────────────────────────────
+//  Editor state machine 
 
 enum class EditorState
 {
@@ -49,7 +50,7 @@ enum class EditorState
     LevelEditor,
 };
 
-// ── Status message ────────────────────────────────────────────────────
+//  Status message 
 
 struct StatusMessage
 {
@@ -58,7 +59,7 @@ struct StatusMessage
     float timer{0.0f}; // seconds remaining
 };
 
-// ── Helper: format name utilities ─────────────────────────────────────
+//  Helper: format name utilities 
 
 static const char* present_mode_name(VkPresentModeKHR mode)
 {
@@ -74,6 +75,20 @@ static const char* present_mode_name(VkPresentModeKHR mode)
         return "VSync Relaxed";
     default:
         return "Unknown";
+    }
+}
+
+static const char* physics_motion_type_name(PhysicsBodyMotionType motionType)
+{
+    switch (motionType)
+    {
+    case PhysicsBodyMotionType::Static:
+        return "Static";
+    case PhysicsBodyMotionType::Kinematic:
+        return "Kinematic";
+    case PhysicsBodyMotionType::Dynamic:
+    default:
+        return "Dynamic";
     }
 }
 
@@ -251,7 +266,7 @@ static float viewport_aspect_mode_value(ViewportAspectMode mode)
     }
 }
 
-// ── Entity-based scene hierarchy drawer ───────────────────────────────
+//  Entity-based scene hierarchy drawer 
 
 static void draw_entity_hierarchy(World& world, entt::entity entity, entt::entity& selectedEntity)
 {
@@ -297,7 +312,7 @@ static void draw_entity_hierarchy(World& world, entt::entity entity, entt::entit
     }
 }
 
-// ── Entity-based transform inspector ──────────────────────────────────
+//  Entity-based transform inspector 
 
 static constexpr float RAD_TO_DEG = 180.0f / 3.14159265358979323846f;
 static constexpr float DEG_TO_RAD = 3.14159265358979323846f / 180.0f;
@@ -331,7 +346,7 @@ static bool draw_transform_inspector(TransformComponent& t)
     return changed;
 }
 
-// ── Script scanner ────────────────────────────────────────────────────
+//  Script scanner 
 // Scans for .lua files in the project directory.
 // Returns project-relative paths (e.g. "Scripts/spin.lua") suitable for ScriptComponent.
 
@@ -436,7 +451,7 @@ static std::vector<ProjectAssetEntry> scan_project_assets(const Project* project
     return assets;
 }
 
-// ── Material file persistence ─────────────────────────────────────────
+//  Material file persistence 
 
 // Reads an entire file into a byte vector; returns empty on failure.
 static std::vector<uint8_t> read_file_bytes(const std::filesystem::path& path)
@@ -584,7 +599,7 @@ std::vector<std::filesystem::path> scan_material_files(const Project* project)
     return result;
 }
 
-// ── Import model helper ───────────────────────────────────────────────
+//  Import model helper 
 // Loads an OBJ via AssetManager, uploads textures/materials/meshes to GPU,
 // creates entity hierarchy in World.
 // If a project is provided, copies textures and writes a .noc_model cache
@@ -1084,7 +1099,7 @@ static void reload_level_assets(AssetManager& assetManager, IRenderer& renderer,
     world.mark_renderables_dirty();
 }
 
-// ── Status message display ────────────────────────────────────────────
+//  Status message display 
 
 static void draw_status_message(StatusMessage& status, float deltaTime)
 {
@@ -1104,7 +1119,7 @@ static void draw_status_message(StatusMessage& status, float deltaTime)
     ImGui::PopStyleColor();
 }
 
-// ── Main ──────────────────────────────────────────────────────────────
+//  Main 
 
 int main()
 {
@@ -1125,16 +1140,25 @@ int main()
     if (!Editor::UI::InitializeImGuiForVulkan(vulkan, window.get_glfw_window()))
         return -1;
 
-    // ── Shared state ──────────────────────────────────────────────────
+    //  Shared state 
     AssetManager assetManager;
     OrbitCameraController cameraController;
     ScriptEngine scriptEngine;
+    PhysicsWorld physicsWorld;
 
     if (auto initResult = scriptEngine.initialize(); !initResult)
     {
         fmt::print("Failed to initialize ScriptEngine: {}\n", initResult.error().message);
         return -1;
     }
+
+    if (auto initResult = physicsWorld.initialize(); !initResult)
+    {
+        fmt::print("Failed to initialize PhysicsWorld: {}\n", initResult.error().message);
+        return -1;
+    }
+
+    bool physicsSimulationEnabled = false;
 
     EditorState editorState = EditorState::ProjectBrowser;
     std::unique_ptr<Project> project;
@@ -1163,7 +1187,7 @@ int main()
     bool showMaterialEditorPanel = true;
     bool showDetailedMetrics = false;
 
-    // ── Material Editor state ─────────────────────────────────────────
+    //  Material Editor state 
     struct EditorMaterial
     {
         std::string name;
@@ -1201,11 +1225,12 @@ int main()
     bool viewportHovered{false};
     ViewportAspectMode viewportAspectMode{ViewportAspectMode::Free};
 
-    // ── State transition helpers ──────────────────────────────────────
+    //  State transition helpers 
 
     auto clear_runtime_scene_state = [&]() {
         renderer.wait_idle();
         renderer.set_renderables({});
+        physicsWorld.clear();
 
         if (level)
             scriptEngine.on_world_destroyed(level->world());
@@ -1284,6 +1309,8 @@ int main()
         graphicsDraft.initialized = false;
         graphicsDraft.dirty = false;
         graphicsApplyRequested = false;
+        physicsSimulationEnabled = false;
+        physicsWorld.set_enabled(false);
         requestDefaultDockLayout = true;
 
         World& world = level->world();
@@ -1404,6 +1431,8 @@ int main()
         graphicsDraft.initialized = false;
         graphicsDraft.dirty = false;
         graphicsApplyRequested = false;
+        physicsSimulationEnabled = false;
+        physicsWorld.set_enabled(false);
         requestDefaultDockLayout = true;
         editorState = EditorState::ProjectBrowser;
     };
@@ -1417,7 +1446,7 @@ int main()
             refresh_viewport_texture();
     });
 
-    // ── Input state ───────────────────────────────────────────────────
+    //  Input state 
     bool rightMouseDown = false;
     bool middleMouseDown = false;
     double lastMouseX = 0.0;
@@ -1502,7 +1531,7 @@ int main()
     };
     const std::string gpuName = vulkan.get_gpu_name();
 
-    // ── Main loop ─────────────────────────────────────────────────────
+    //  Main loop 
 
     if (auto code = get_error_code(window.loop([&]() {
             // Frame timing
@@ -1530,6 +1559,8 @@ int main()
 
                 World& world = level->world();
                 scriptEngine.update(world, deltaTime);
+                physicsWorld.set_enabled(physicsSimulationEnabled);
+                physicsWorld.step(world, deltaTime);
                 world.update_world_matrices();
                 if (world.has_renderables_updates_pending())
                     renderer.set_renderables(world.collect_renderables());
@@ -1679,7 +1710,7 @@ int main()
                 {
                     if (!project)
                     {
-                        // ── No project open: create or open ──────────────
+                        //  No project open: create or open 
                         ImGui::SeparatorText("Create New Project");
 
                         ImGui::InputText("Project Name", projectNameBuf, sizeof(projectNameBuf));
@@ -1757,7 +1788,7 @@ int main()
                     }
                     else
                     {
-                        // ── Project is open: manage levels ───────────────
+                        //  Project is open: manage levels 
                         ImGui::Text("Project: %s", project->name().c_str());
                         ImGui::Text("Root: %s", project->root_path().c_str());
                         ImGui::Separator();
@@ -2270,6 +2301,13 @@ int main()
                     if (ImGui::Begin("Level", &showLevelPanel))
                     {
                     ImGui::Text("Level: %s%s", level->name().c_str(), level->is_dirty() ? " *" : "");
+
+                    bool physicsEnabledUi = physicsSimulationEnabled;
+                    if (ImGui::Checkbox("Enable Physics Simulation", &physicsEnabledUi))
+                    {
+                        physicsSimulationEnabled = physicsEnabledUi;
+                        physicsWorld.set_enabled(physicsSimulationEnabled);
+                    }
 
                     if (!level->file_path().empty())
                         ImGui::TextDisabled("File: %s", level->file_path().c_str());
@@ -2847,9 +2885,87 @@ int main()
                         }
 
                         ImGui::Separator();
+                        if (auto* pc = world.registry().try_get<PhysicsBodyComponent>(selectedEntity))
+                        {
+                            ImGui::Text("Physics Body");
+
+                            bool physicsEnabled = pc->enabled;
+                            if (ImGui::Checkbox("Enabled##PhysicsBody", &physicsEnabled))
+                            {
+                                pc->enabled = physicsEnabled;
+                                pc->runtimeDirty = true;
+                                level->mark_dirty();
+                            }
+
+                            std::int32_t selectedMotion = static_cast<std::int32_t>(pc->motionType);
+                            if (ImGui::BeginCombo("Motion Type", physics_motion_type_name(pc->motionType)))
+                            {
+                                for (std::int32_t i = 0; i < 3; ++i)
+                                {
+                                    auto motionType = static_cast<PhysicsBodyMotionType>(i);
+                                    bool selected = (selectedMotion == i);
+                                    if (ImGui::Selectable(physics_motion_type_name(motionType), selected))
+                                    {
+                                        pc->motionType = motionType;
+                                        pc->runtimeDirty = true;
+                                        level->mark_dirty();
+                                    }
+                                    if (selected)
+                                        ImGui::SetItemDefaultFocus();
+                                }
+                                ImGui::EndCombo();
+                            }
+
+                            if (ImGui::DragFloat3("Half Extents", &pc->halfExtents.x, 0.01f, 0.01f, 1000.0f))
+                            {
+                                pc->runtimeDirty = true;
+                                level->mark_dirty();
+                            }
+                            if (ImGui::SliderFloat("Friction", &pc->friction, 0.0f, 1.0f))
+                            {
+                                pc->runtimeDirty = true;
+                                level->mark_dirty();
+                            }
+                            if (ImGui::SliderFloat("Restitution", &pc->restitution, 0.0f, 1.0f))
+                            {
+                                pc->runtimeDirty = true;
+                                level->mark_dirty();
+                            }
+                            if (ImGui::Checkbox("Use Gravity", &pc->useGravity))
+                            {
+                                pc->runtimeDirty = true;
+                                level->mark_dirty();
+                            }
+                            if (ImGui::SliderFloat("Linear Damping", &pc->linearDamping, 0.0f, 2.0f))
+                            {
+                                pc->runtimeDirty = true;
+                                level->mark_dirty();
+                            }
+                            if (ImGui::SliderFloat("Angular Damping", &pc->angularDamping, 0.0f, 2.0f))
+                            {
+                                pc->runtimeDirty = true;
+                                level->mark_dirty();
+                            }
+
+                            if (ImGui::Button("Remove Physics Body"))
+                            {
+                                physicsWorld.on_entity_removed(selectedEntity);
+                                world.registry().remove<PhysicsBodyComponent>(selectedEntity);
+                                level->mark_dirty();
+                            }
+                        }
+                        else if (ImGui::Button("Add Physics Body"))
+                        {
+                            world.registry().emplace<PhysicsBodyComponent>(selectedEntity);
+                            level->mark_dirty();
+                        }
+
+                        ImGui::Separator();
                         auto& tc = world.registry().get<TransformComponent>(selectedEntity);
                         if (draw_transform_inspector(tc))
                         {
+                            if (auto* pc = world.registry().try_get<PhysicsBodyComponent>(selectedEntity))
+                                pc->runtimeDirty = true;
                             world.mark_transforms_dirty();
                             level->mark_dirty();
                         }
@@ -2870,6 +2986,7 @@ int main()
                             else
                             {
                                 scriptEngine.on_entity_tree_destroyed(world, selectedEntity);
+                                physicsWorld.on_entity_tree_destroyed(world, selectedEntity);
                                 world.destroy_entity(selectedEntity);
                                 selectedEntity = entt::null;
                                 level->mark_dirty();
@@ -2925,6 +3042,7 @@ int main()
     if (level)
         scriptEngine.on_world_destroyed(level->world());
     scriptEngine.shutdown();
+    physicsWorld.shutdown();
     release_viewport_texture();
     Editor::UI::Shutdown(vulkan);
     ImGui::DestroyContext();
