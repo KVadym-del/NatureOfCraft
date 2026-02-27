@@ -13,6 +13,7 @@
         "vulkan-binding"
       ]
     },
+    "luajit",
     "rapidobj",
     "shaderc",
     "sol2",
@@ -21,6 +22,6 @@
     "vulkan",
     "vulkan-headers",
     "vulkan-loader",
-    "luajit"
+    "joltphysics"
   ]
 }

@@ -2291,7 +2291,7 @@ void Vulkan::update_nis_config()
     VkExtent2D swapExtent = m_swapchain.get_extent();
     
     // NIS upscaling mode: input is render resolution, output is swapchain (viewport) resolution
-    NVScalerUpdateConfig(
+    const bool configValid = NVScalerUpdateConfig(
         config,
         m_nisSharpness,
         0,
@@ -2308,6 +2308,16 @@ void Vulkan::update_nis_config()
         swapExtent.height,
         NISHDRMode::None
     );
+
+    if (!configValid)
+    {
+        fmt::print(
+            "Warning: NIS config is invalid for render scale {:.2f}. "
+            "NIS upscaling supports only 0.50..1.00 scale factors.\n",
+            m_renderScale
+        );
+        return;
+    }
 
     // Upload to UBO
     VkDevice device = m_vulkanDevice.get_device();
@@ -2649,6 +2659,16 @@ void Vulkan::set_nis_enabled(bool enabled) noexcept
         return;
     m_nisEnabled = enabled;
 
+    constexpr float kMinNisRenderScale = 0.5f;
+
+    if (m_nisEnabled && m_renderScale < kMinNisRenderScale)
+    {
+        m_renderScale = kMinNisRenderScale;
+        m_framebufferResized = true;
+        fmt::print("NIS enabled: render scale clamped to {:.2f} (NIS supports 0.50..1.00 upscaling range).\n", kMinNisRenderScale);
+        return;
+    }
+
     VkDevice device = m_vulkanDevice.get_device();
     vkDeviceWaitIdle(device);
 
@@ -2691,7 +2711,16 @@ float Vulkan::get_nis_sharpness() const noexcept
 
 void Vulkan::set_render_scale(float scale) noexcept
 {
-    scale = std::clamp(scale, 0.25f, 2.0f);
+    constexpr float kMinRenderScale = 0.25f;
+    constexpr float kMinNisRenderScale = 0.5f;
+    scale = std::clamp(scale, kMinRenderScale, 2.0f);
+
+    if (m_nisEnabled && scale < kMinNisRenderScale)
+    {
+        scale = kMinNisRenderScale;
+        fmt::print("NIS requires render scale >= {:.2f}; clamping requested value.\n", kMinNisRenderScale);
+    }
+
     if (std::fabs(scale - m_renderScale) < 0.0001f)
         return;
 
