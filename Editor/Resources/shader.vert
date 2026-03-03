@@ -12,12 +12,14 @@ layout(location = 8) in vec4 inModelRow0;
 layout(location = 9) in vec4 inModelRow1;
 layout(location = 10) in vec4 inModelRow2;
 layout(location = 11) in vec4 inModelRow3;
+layout(location = 12) in vec4 inGlow;
 
 layout(location = 0) out vec2 fragTexCoord;
 layout(location = 1) out vec3 fragWorldPos;
 layout(location = 2) out vec3 fragT;
 layout(location = 3) out vec3 fragB;
 layout(location = 4) out vec3 fragN;
+layout(location = 5) out vec4 fragGlow;
 
 void main() {
     mat4 mvp = mat4(inMvpRow0, inMvpRow1, inMvpRow2, inMvpRow3);
@@ -38,4 +40,5 @@ void main() {
     fragT = T;
     fragB = B;
     fragN = N;
+    fragGlow = inGlow;
 }

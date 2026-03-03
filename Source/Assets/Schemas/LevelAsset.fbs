@@ -30,6 +30,9 @@ table MeshComponentData {
     material_index: int32 = 0;
     asset_path: string;
     material_name: string;
+    glow_enabled: bool = false;
+    glow_color: Vec3;
+    glow_intensity: float = 1.5;
 }
 
 table CameraComponentData {

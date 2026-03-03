@@ -10,4 +10,7 @@ struct Renderable
     DirectX::XMFLOAT4X4 worldMatrix{};
     uint32_t meshIndex{};
     uint32_t materialIndex{};
+    uint32_t entityId{};
+    DirectX::XMFLOAT3 glowColor{1.0f, 0.7f, 0.25f};
+    float glowIntensity{0.0f};
 };

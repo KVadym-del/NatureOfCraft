@@ -99,6 +99,21 @@ void Vulkan::set_renderables(const std::vector<Renderable>& renderables) noexcep
     m_totalTriangleCountCached = totalTriangles;
 }
 
+MeshBounds Vulkan::get_mesh_bounds(std::uint32_t meshIndex) const noexcept
+{
+    if (meshIndex >= m_meshes.size())
+        return {};
+
+    const auto& mesh = m_meshes[meshIndex];
+    MeshBounds bounds{};
+    bounds.min = mesh.boundsMin;
+    bounds.max = mesh.boundsMax;
+    bounds.center = mesh.boundsCenter;
+    bounds.radius = mesh.boundsRadius;
+    bounds.valid = mesh.boundsRadius > 0.0f;
+    return bounds;
+}
+
 Result<> Vulkan::draw_frame() noexcept
 {
     VkDevice device = m_vulkanDevice.get_device();
@@ -663,6 +678,12 @@ Result<> Vulkan::record_command_buffer(VkCommandBuffer commandBuffer, std::uint3
             InstanceData instanceData{};
             XMStoreFloat4x4(&instanceData.mvp, mvp);
             instanceData.model = renderable.worldMatrix;
+            instanceData.glow = {
+                renderable.glowColor.x,
+                renderable.glowColor.y,
+                renderable.glowColor.z,
+                std::max(0.0f, renderable.glowIntensity),
+            };
 
             const std::uint32_t firstInstance = static_cast<std::uint32_t>(m_instanceDataScratch.size());
             m_instanceDataScratch.push_back(instanceData);
@@ -1135,6 +1156,8 @@ Result<uint32_t> Vulkan::upload_mesh(const MeshData& meshData)
         (meshData.boundsMin.y + meshData.boundsMax.y) * 0.5f,
         (meshData.boundsMin.z + meshData.boundsMax.z) * 0.5f,
     };
+    mesh.boundsMin = meshData.boundsMin;
+    mesh.boundsMax = meshData.boundsMax;
     const float halfX = (meshData.boundsMax.x - meshData.boundsMin.x) * 0.5f;
     const float halfY = (meshData.boundsMax.y - meshData.boundsMin.y) * 0.5f;
     const float halfZ = (meshData.boundsMax.z - meshData.boundsMin.z) * 0.5f;

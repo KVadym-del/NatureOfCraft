@@ -5,6 +5,7 @@ layout(location = 1) in vec3 fragWorldPos;
 layout(location = 2) in vec3 fragT;
 layout(location = 3) in vec3 fragB;
 layout(location = 4) in vec3 fragN;
+layout(location = 5) in vec4 fragGlow;
 
 // PBR texture bindings
 layout(set = 0, binding = 0) uniform sampler2D albedoMap;
@@ -120,6 +121,7 @@ void main() {
     vec3 ambient = vec3(0.03) * albedo * ao;
 
     vec3 color = ambient + Lo;
+    color += fragGlow.rgb * max(fragGlow.a, 0.0);
 
     // Tone mapping (Reinhard) + gamma correction
     color = color / (color + vec3(1.0));

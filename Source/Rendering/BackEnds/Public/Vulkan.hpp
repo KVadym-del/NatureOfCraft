@@ -235,6 +235,7 @@ class NOC_EXPORT Vulkan : public IRenderer
     /// Sets the list of renderables to draw this frame.
     /// Each Renderable contains a world matrix and a mesh index.
     void set_renderables(const std::vector<Renderable>& renderables) noexcept override;
+    MeshBounds get_mesh_bounds(std::uint32_t meshIndex) const noexcept override;
 
     /// Notifies the renderer that the framebuffer was resized.
     /// Called by the Window's framebuffer size callback.
@@ -325,6 +326,7 @@ class NOC_EXPORT Vulkan : public IRenderer
     {
         DirectX::XMFLOAT4X4 mvp{};
         DirectX::XMFLOAT4X4 model{};
+        DirectX::XMFLOAT4 glow{};
     };
 
     // --- Sub-components ---

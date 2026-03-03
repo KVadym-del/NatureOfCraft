@@ -11,6 +11,15 @@
 struct MeshData;    // Forward declare — full definition in Assets/Public/MeshData.hpp
 struct TextureData; // Forward declare — full definition in Assets/Public/TextureData.hpp
 
+struct MeshBounds
+{
+    DirectX::XMFLOAT3 min{0.0f, 0.0f, 0.0f};
+    DirectX::XMFLOAT3 max{0.0f, 0.0f, 0.0f};
+    DirectX::XMFLOAT3 center{0.0f, 0.0f, 0.0f};
+    float radius{0.0f};
+    bool valid{false};
+};
+
 enum class KHR_Settings;
 
 NOC_SUPPRESS_DLL_WARNINGS
@@ -54,6 +63,9 @@ class NOC_EXPORT IRenderer
 
     /// Set the list of renderables to draw this frame.
     virtual void set_renderables(const std::vector<Renderable>& renderables) noexcept = 0;
+
+    /// Returns local-space mesh bounds for debug/editor overlays.
+    virtual MeshBounds get_mesh_bounds(std::uint32_t meshIndex) const noexcept = 0;
 
     /// Release scene-owned GPU content while keeping renderer core state alive.
     /// Intended for level/project transitions.

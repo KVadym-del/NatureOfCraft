@@ -9,6 +9,7 @@
 
 #include <fmt/core.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -24,6 +25,34 @@ struct LuaEntity
 {
     entt::entity handle{entt::null};
     World* world{nullptr};
+
+    template <typename Fn> void for_each_in_subtree(Fn&& fn) const
+    {
+        if (!valid())
+            return;
+
+        auto& reg = world->registry();
+        std::vector<entt::entity> stack{handle};
+        while (!stack.empty())
+        {
+            const entt::entity current = stack.back();
+            stack.pop_back();
+
+            if (!reg.valid(current))
+                continue;
+
+            fn(current);
+
+            if (const auto* hierarchy = reg.try_get<HierarchyComponent>(current))
+            {
+                for (entt::entity child : hierarchy->children)
+                {
+                    if (reg.valid(child))
+                        stack.push_back(child);
+                }
+            }
+        }
+    }
 
     bool valid() const noexcept
     {
@@ -49,7 +78,90 @@ struct LuaEntity
     {
         if (!valid())
             return false;
-        return world->registry().any_of<MeshComponent>(handle);
+
+        auto& reg = world->registry();
+        if (reg.any_of<MeshComponent>(handle))
+            return true;
+
+        bool found = false;
+        for_each_in_subtree([&](entt::entity e) {
+            if (!found && reg.any_of<MeshComponent>(e))
+                found = true;
+        });
+        return found;
+    }
+
+    MeshComponent* mesh() const
+    {
+        if (!valid())
+            return nullptr;
+
+        auto& reg = world->registry();
+        if (auto* selfMesh = reg.try_get<MeshComponent>(handle))
+            return selfMesh;
+
+        MeshComponent* firstMesh = nullptr;
+        for_each_in_subtree([&](entt::entity e) {
+            if (firstMesh != nullptr)
+                return;
+            firstMesh = reg.try_get<MeshComponent>(e);
+        });
+        return firstMesh;
+    }
+
+    void set_glow(bool enabled, const LuaVec3& color, float intensity) const
+    {
+        if (!valid())
+            return;
+
+        auto& reg = world->registry();
+        const DirectX::XMFLOAT3 glowColor = color.to_dx();
+        const float glowIntensity = std::max(0.0f, intensity);
+
+        for_each_in_subtree([&](entt::entity e) {
+            if (auto* meshComp = reg.try_get<MeshComponent>(e))
+            {
+                meshComp->glowEnabled = enabled;
+                meshComp->glowColor = glowColor;
+                meshComp->glowIntensity = glowIntensity;
+            }
+        });
+    }
+
+    void set_outline(bool enabled, const LuaVec3& color, float thickness, bool throughWalls) const
+    {
+        if (!valid())
+            return;
+
+        auto& reg = world->registry();
+        const DirectX::XMFLOAT3 outlineColor = color.to_dx();
+        const float outlineThickness = std::max(0.5f, thickness);
+
+        for_each_in_subtree([&](entt::entity e) {
+            if (auto* meshComp = reg.try_get<MeshComponent>(e))
+            {
+                meshComp->outlineEnabled = enabled;
+                meshComp->outlineColor = outlineColor;
+                meshComp->outlineThickness = outlineThickness;
+                meshComp->outlineThroughWalls = throughWalls;
+            }
+        });
+    }
+
+    void clear_visual_effects() const
+    {
+        if (!valid())
+            return;
+
+        auto& reg = world->registry();
+        for_each_in_subtree([&](entt::entity e) {
+            if (auto* meshComp = reg.try_get<MeshComponent>(e))
+            {
+                meshComp->glowEnabled = false;
+                meshComp->glowIntensity = 0.0f;
+                meshComp->outlineEnabled = false;
+            }
+        });
     }
 
     std::uint32_t id() const noexcept
@@ -156,6 +268,16 @@ Result<> ScriptEngine::initialize()
         &LuaVec3::operator*, sol::meta_function::unary_minus, sol::resolve<LuaVec3() const>(&LuaVec3::operator-),
         "length", &LuaVec3::length, "normalized", &LuaVec3::normalized, "dot", &LuaVec3::dot, "cross", &LuaVec3::cross);
 
+    lua.safe_script(R"(
+        if type(Vec3) == "table" then
+            local mt = getmetatable(Vec3) or {}
+            mt.__call = function(_, x, y, z)
+                return Vec3.new(x or 0.0, y or 0.0, z or 0.0)
+            end
+            setmetatable(Vec3, mt)
+        end
+    )");
+
     //    Register Transform                                             
     // Lua gets a pointer to the actual TransformComponent on the entity,
     // so mutations in Lua directly affect the C++ side.
@@ -175,11 +297,33 @@ Result<> ScriptEngine::initialize()
         "set_rotation_euler",
         [](TransformComponent& t, float pitch, float yaw, float roll) { t.set_rotation_euler(pitch, yaw, roll); });
 
+    lua.new_usertype<MeshComponent>(
+        "Mesh",
+        sol::no_constructor,
+        "glow_enabled",
+        &MeshComponent::glowEnabled,
+        "glow_intensity",
+        &MeshComponent::glowIntensity,
+        "glow_color",
+        sol::property([](const MeshComponent& m) { return LuaVec3(m.glowColor); },
+                      [](MeshComponent& m, const LuaVec3& v) { m.glowColor = v.to_dx(); }),
+        "outline_enabled",
+        &MeshComponent::outlineEnabled,
+        "outline_through_walls",
+        &MeshComponent::outlineThroughWalls,
+        "outline_thickness",
+        &MeshComponent::outlineThickness,
+        "outline_color",
+        sol::property([](const MeshComponent& m) { return LuaVec3(m.outlineColor); },
+                      [](MeshComponent& m, const LuaVec3& v) { m.outlineColor = v.to_dx(); }));
+
     //    Register Entity                                                
 
     lua.new_usertype<LuaEntity>("Entity", sol::no_constructor, "name", &LuaEntity::name, "transform",
-                                &LuaEntity::transform, "has_mesh", &LuaEntity::has_mesh, "id", &LuaEntity::id, "valid",
-                                &LuaEntity::valid);
+                                &LuaEntity::transform, "mesh", &LuaEntity::mesh, "has_mesh", &LuaEntity::has_mesh,
+                                "set_glow", &LuaEntity::set_glow, "set_outline", &LuaEntity::set_outline,
+                                "clear_visual_effects", &LuaEntity::clear_visual_effects, "id", &LuaEntity::id,
+                                "valid", &LuaEntity::valid);
 
     fmt::print("[ScriptEngine] Initialized LuaJIT VM\n");
     return {};
@@ -242,6 +386,7 @@ void ScriptEngine::update(World& world, float dt)
     auto& reg = world.registry();
     auto view = reg.view<ScriptComponent>();
     bool scriptsMayMutateTransforms = false;
+    bool scriptsMayMutateRenderables = false;
 
     for (auto entity : view)
     {
@@ -249,6 +394,7 @@ void ScriptEngine::update(World& world, float dt)
         if (sc.scriptPath.empty())
             continue;
         scriptsMayMutateTransforms = true;
+        scriptsMayMutateRenderables = true;
 
         // Lazy-load: if no environment exists yet, load the script
         auto envIt = m_impl->environments.find(entity);
@@ -315,6 +461,8 @@ void ScriptEngine::update(World& world, float dt)
 
     if (scriptsMayMutateTransforms)
         world.mark_transforms_dirty();
+    if (scriptsMayMutateRenderables)
+        world.mark_renderables_dirty();
 }
 
 //    on_entity_destroyed                                                

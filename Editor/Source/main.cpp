@@ -31,9 +31,12 @@
 #include <filesystem>
 #include <fstream>
 #include <fmt/core.h>
+#include <iterator>
+#include <limits>
 #include <memory>
 #include <set>
 #include <string>
+#include <utility>
 #include <unordered_map>
 #include <vector>
 
@@ -76,6 +79,25 @@ static const char* present_mode_name(VkPresentModeKHR mode)
     default:
         return "Unknown";
     }
+}
+
+static bool project_world_to_screen(const DirectX::XMFLOAT3& worldPos, const DirectX::XMMATRIX& viewProj,
+                                    const ImVec2& viewportMin, const ImVec2& viewportSize, ImVec2& outScreen)
+{
+    using namespace DirectX;
+    const XMVECTOR world = XMVectorSet(worldPos.x, worldPos.y, worldPos.z, 1.0f);
+    const XMVECTOR clip = XMVector4Transform(world, viewProj);
+    const float w = XMVectorGetW(clip);
+    if (w <= 0.0001f)
+        return false;
+
+    const float invW = 1.0f / w;
+    const float ndcX = XMVectorGetX(clip) * invW;
+    const float ndcY = XMVectorGetY(clip) * invW;
+
+    outScreen.x = viewportMin.x + (ndcX * 0.5f + 0.5f) * viewportSize.x;
+    outScreen.y = viewportMin.y + (ndcY * 0.5f + 0.5f) * viewportSize.y;
+    return true;
 }
 
 static const char* physics_motion_type_name(PhysicsBodyMotionType motionType)
@@ -346,6 +368,41 @@ static bool draw_transform_inspector(TransformComponent& t)
     return changed;
 }
 
+static void clear_entity_visual_effects(World& world, entt::entity entity)
+{
+    auto& reg = world.registry();
+    if (!reg.valid(entity))
+        return;
+
+    std::vector<entt::entity> stack{entity};
+    while (!stack.empty())
+    {
+        const entt::entity current = stack.back();
+        stack.pop_back();
+
+        if (!reg.valid(current))
+            continue;
+
+        if (auto* mesh = reg.try_get<MeshComponent>(current))
+        {
+            mesh->glowEnabled = false;
+            mesh->glowIntensity = 0.0f;
+            mesh->outlineEnabled = false;
+        }
+
+        if (const auto* hierarchy = reg.try_get<HierarchyComponent>(current))
+        {
+            for (entt::entity child : hierarchy->children)
+            {
+                if (reg.valid(child))
+                    stack.push_back(child);
+            }
+        }
+    }
+
+    world.mark_renderables_dirty();
+}
+
 //  Script scanner 
 // Scans for .lua files in the project directory.
 // Returns project-relative paths (e.g. "Scripts/spin.lua") suitable for ScriptComponent.
@@ -390,6 +447,16 @@ static bool extension_in(const std::filesystem::path& path, const std::vector<st
 {
     std::string ext = to_lower_copy(path.extension().string());
     return std::find(exts.begin(), exts.end(), ext) != exts.end();
+}
+
+static bool file_contains(const std::filesystem::path& path, std::string_view needle)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+        return false;
+
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    return content.find(needle) != std::string::npos;
 }
 
 static std::vector<ProjectAssetEntry> scan_project_assets(const Project* project)
@@ -1224,6 +1291,8 @@ int main()
     VkImageView viewportDescriptorImageView{nullptr};
     bool viewportHovered{false};
     ViewportAspectMode viewportAspectMode{ViewportAspectMode::Free};
+    bool showSelectionOutline{true};
+    bool showPhysicsColliders{true};
 
     //  State transition helpers 
 
@@ -1316,8 +1385,27 @@ int main()
         World& world = level->world();
 
         // Configure script engine for this project's script directory
+        renderer.set_shader_paths("Resources/shader.vert", "Resources/shader.frag");
+
         if (project)
+        {
             scriptEngine.set_script_root(project->root_path());
+
+            std::error_code ec;
+            const std::filesystem::path scriptsDir = std::filesystem::path(project->get_absolute_path("Scripts"));
+            std::filesystem::create_directories(scriptsDir, ec);
+
+            const std::array<std::string, 2> sampleScripts = {"pulse_glow.lua", "outline_xray.lua"};
+            for (const auto& scriptName : sampleScripts)
+            {
+                const std::filesystem::path sourcePath = std::filesystem::path("Resources") / "scripts" / scriptName;
+                const std::filesystem::path targetPath = scriptsDir / scriptName;
+                if (!std::filesystem::exists(sourcePath))
+                    continue;
+                std::filesystem::copy_file(sourcePath, targetPath, std::filesystem::copy_options::overwrite_existing,
+                                           ec);
+            }
+        }
 
         // Point the renderer at the project's shader sources (if available)
         if (project)
@@ -1325,7 +1413,21 @@ int main()
             std::filesystem::path vertShader = project->get_absolute_path("Assets/Shaders/shader.vert");
             std::filesystem::path fragShader = project->get_absolute_path("Assets/Shaders/shader.frag");
             if (std::filesystem::exists(vertShader) && std::filesystem::exists(fragShader))
-                renderer.set_shader_paths(vertShader, fragShader);
+            {
+                const bool projectSupportsGlow = file_contains(vertShader, "inGlow") && file_contains(fragShader, "fragGlow");
+                if (projectSupportsGlow)
+                {
+                    renderer.set_shader_paths(vertShader, fragShader);
+                }
+                else
+                {
+                    statusMessage = {
+                        "Project shaders are missing glow support. Using default editor shaders for this session.",
+                        true,
+                        6.0f,
+                    };
+                }
+            }
         }
 
         // Re-import all referenced models so entities have valid GPU indices
@@ -1989,6 +2091,9 @@ int main()
             {
                 World& world = level->world();
                 bool backToProjectsRequested = false;
+                bool viewportImageValid = false;
+                ImVec2 viewportImageMin{};
+                ImVec2 viewportImageSize{};
 
                 // --- Viewport ---
                 if (showViewportPanel)
@@ -2013,6 +2118,9 @@ int main()
                             add_aspect_option("4:3", ViewportAspectMode::Aspect4x3);
                             add_aspect_option("1:1", ViewportAspectMode::Aspect1x1);
                             add_aspect_option("21:9", ViewportAspectMode::Aspect21x9);
+                            ImGui::Separator();
+                            ImGui::Checkbox("Selection Outline", &showSelectionOutline);
+                            ImGui::Checkbox("Show Physics Colliders", &showPhysicsColliders);
                             ImGui::EndPopup();
                         }
 
@@ -2040,6 +2148,9 @@ int main()
                             ImGui::Image(reinterpret_cast<ImTextureID>(viewportDescriptorSet), imageSize, ImVec2(0, 0),
                                          ImVec2(1, 1));
                             viewportHovered = ImGui::IsItemHovered();
+                            viewportImageValid = true;
+                            viewportImageMin = ImGui::GetItemRectMin();
+                            viewportImageSize = ImGui::GetItemRectSize();
                         }
                         else
                         {
@@ -2832,6 +2943,7 @@ int main()
                             {
                                 scriptEngine.on_entity_destroyed(world, selectedEntity);
                                 world.registry().remove<ScriptComponent>(selectedEntity);
+                                clear_entity_visual_effects(world, selectedEntity);
                                 level->mark_dirty();
                             }
                         }
@@ -3003,6 +3115,162 @@ int main()
                         }
                     }
                     ImGui::End();
+                }
+
+                if (viewportImageValid && (showPhysicsColliders || (showSelectionOutline && selectedEntity != entt::null)))
+                {
+                    using namespace DirectX;
+
+                    std::uint32_t rw = renderer.get_render_width();
+                    std::uint32_t rh = renderer.get_render_height();
+                    float ar = (rh > 0) ? static_cast<float>(rw) / static_cast<float>(rh) : 1.0f;
+                    XMMATRIX viewMat = cameraController.get_view_matrix();
+                    XMMATRIX projMat = cameraController.get_projection_matrix(ar);
+                    XMMATRIX viewProj = XMMatrixMultiply(viewMat, projMat);
+
+                    auto debugView = world.registry().view<PhysicsBodyComponent, WorldMatrixCache>();
+                    ImDrawList* drawList = ImGui::GetForegroundDrawList();
+                    const ImU32 lineColor = IM_COL32(120, 210, 255, 220);
+                    const ImU32 selectionColor = IM_COL32(255, 180, 60, 255);
+
+                    constexpr std::array<std::pair<int, int>, 12> edges = {
+                        std::pair<int, int>{0, 1}, {1, 2}, {2, 3}, {3, 0},
+                        {4, 5}, {5, 6}, {6, 7}, {7, 4},
+                        {0, 4}, {1, 5}, {2, 6}, {3, 7},
+                    };
+
+                    const auto draw_box = [&](const XMMATRIX& worldMatrix, const XMFLOAT3& halfExtents, ImU32 color,
+                                              float thickness) {
+                        constexpr std::array<XMFLOAT3, 8> localCorners = {
+                            XMFLOAT3{-1, -1, -1}, XMFLOAT3{1, -1, -1}, XMFLOAT3{1, 1, -1}, XMFLOAT3{-1, 1, -1},
+                            XMFLOAT3{-1, -1, 1},  XMFLOAT3{1, -1, 1},  XMFLOAT3{1, 1, 1},  XMFLOAT3{-1, 1, 1},
+                        };
+
+                        std::array<ImVec2, 8> projected{};
+                        std::array<bool, 8> valid{};
+
+                        for (std::size_t i = 0; i < localCorners.size(); ++i)
+                        {
+                            const XMFLOAT3 scaled{
+                                localCorners[i].x * halfExtents.x,
+                                localCorners[i].y * halfExtents.y,
+                                localCorners[i].z * halfExtents.z,
+                            };
+
+                            const XMVECTOR localPos = XMVectorSet(scaled.x, scaled.y, scaled.z, 1.0f);
+                            const XMVECTOR worldPos = XMVector3TransformCoord(localPos, worldMatrix);
+                            XMFLOAT3 worldPoint{};
+                            XMStoreFloat3(&worldPoint, worldPos);
+                            valid[i] = project_world_to_screen(worldPoint, viewProj, viewportImageMin, viewportImageSize,
+                                                               projected[i]);
+                        }
+
+                        for (const auto& [a, b] : edges)
+                        {
+                            if (valid[a] && valid[b])
+                                drawList->AddLine(projected[a], projected[b], color, thickness);
+                        }
+                    };
+
+                    if (showPhysicsColliders)
+                    {
+                        for (entt::entity e : debugView)
+                        {
+                            const auto& body = debugView.get<PhysicsBodyComponent>(e);
+                            if (!body.enabled)
+                                continue;
+
+                            const auto& cache = debugView.get<WorldMatrixCache>(e);
+                            XMMATRIX worldMat = XMLoadFloat4x4(&cache.worldMatrix);
+                            draw_box(worldMat, body.halfExtents, lineColor, 1.5f);
+                        }
+                    }
+
+                    if (showSelectionOutline && selectedEntity != entt::null && world.registry().valid(selectedEntity))
+                    {
+                        auto& reg = world.registry();
+                        std::vector<entt::entity> stack{selectedEntity};
+                        while (!stack.empty())
+                        {
+                            const entt::entity current = stack.back();
+                            stack.pop_back();
+
+                            if (const auto* hierarchy = reg.try_get<HierarchyComponent>(current))
+                            {
+                                for (entt::entity child : hierarchy->children)
+                                {
+                                    if (reg.valid(child))
+                                        stack.push_back(child);
+                                }
+                            }
+
+                            const auto* mesh = reg.try_get<MeshComponent>(current);
+                            const auto* cache = reg.try_get<WorldMatrixCache>(current);
+                            if (!mesh || !cache || mesh->meshIndex < 0)
+                                continue;
+
+                            const MeshBounds meshBounds = renderer.get_mesh_bounds(static_cast<std::uint32_t>(mesh->meshIndex));
+                            if (!meshBounds.valid)
+                                continue;
+
+                            const XMFLOAT3 min = meshBounds.min;
+                            const XMFLOAT3 max = meshBounds.max;
+                            const XMFLOAT3 center{
+                                (min.x + max.x) * 0.5f,
+                                (min.y + max.y) * 0.5f,
+                                (min.z + max.z) * 0.5f,
+                            };
+                            const XMFLOAT3 extents{
+                                (max.x - min.x) * 0.5f,
+                                (max.y - min.y) * 0.5f,
+                                (max.z - min.z) * 0.5f,
+                            };
+
+                            const XMMATRIX worldMat = XMLoadFloat4x4(&cache->worldMatrix);
+                            const XMMATRIX selectionBoxWorld =
+                                XMMatrixMultiply(XMMatrixTranslation(center.x, center.y, center.z), worldMat);
+                            draw_box(selectionBoxWorld, extents, selectionColor, 2.5f);
+                        }
+                    }
+
+                    auto outlineView = world.registry().view<MeshComponent, WorldMatrixCache>();
+                    for (entt::entity e : outlineView)
+                    {
+                        const auto& meshComp = outlineView.get<MeshComponent>(e);
+                        if (!meshComp.outlineEnabled || meshComp.meshIndex < 0)
+                            continue;
+
+                        const MeshBounds meshBounds =
+                            renderer.get_mesh_bounds(static_cast<std::uint32_t>(meshComp.meshIndex));
+                        if (!meshBounds.valid)
+                            continue;
+
+                        const auto& cache = outlineView.get<WorldMatrixCache>(e);
+                        const XMFLOAT3 min = meshBounds.min;
+                        const XMFLOAT3 max = meshBounds.max;
+                        const XMFLOAT3 center{
+                            (min.x + max.x) * 0.5f,
+                            (min.y + max.y) * 0.5f,
+                            (min.z + max.z) * 0.5f,
+                        };
+                        const XMFLOAT3 extents{
+                            (max.x - min.x) * 0.5f,
+                            (max.y - min.y) * 0.5f,
+                            (max.z - min.z) * 0.5f,
+                        };
+
+                        const XMMATRIX worldMat = XMLoadFloat4x4(&cache.worldMatrix);
+                        const XMMATRIX outlineWorld =
+                            XMMatrixMultiply(XMMatrixTranslation(center.x, center.y, center.z), worldMat);
+
+                        const std::uint8_t alpha = meshComp.outlineThroughWalls ? 255 : 210;
+                        const ImU32 outlineColor = IM_COL32(
+                            static_cast<int>(std::clamp(meshComp.outlineColor.x, 0.0f, 1.0f) * 255.0f),
+                            static_cast<int>(std::clamp(meshComp.outlineColor.y, 0.0f, 1.0f) * 255.0f),
+                            static_cast<int>(std::clamp(meshComp.outlineColor.z, 0.0f, 1.0f) * 255.0f),
+                            alpha);
+                        draw_box(outlineWorld, extents, outlineColor, std::max(0.5f, meshComp.outlineThickness));
+                    }
                 }
 
                 if (backToProjectsRequested)

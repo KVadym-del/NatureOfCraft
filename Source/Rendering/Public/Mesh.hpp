@@ -69,6 +69,8 @@ struct Mesh
     VkBuffer indexBuffer{};
     VkDeviceMemory indexBufferMemory{};
     std::uint32_t indexCount{};
+    XMFLOAT3 boundsMin{};
+    XMFLOAT3 boundsMax{};
     XMFLOAT3 boundsCenter{};
     float boundsRadius{};
     VkDeviceSize vertexBufferBytes{};

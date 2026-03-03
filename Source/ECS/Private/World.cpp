@@ -168,6 +168,12 @@ const std::vector<Renderable>& World::collect_renderables()
         r.worldMatrix = cache.worldMatrix;
         r.meshIndex = static_cast<uint32_t>(mesh.meshIndex);
         r.materialIndex = static_cast<uint32_t>(mesh.materialIndex);
+        r.entityId = static_cast<uint32_t>(entity);
+        if (mesh.glowEnabled)
+        {
+            r.glowColor = mesh.glowColor;
+            r.glowIntensity = std::max(0.0f, mesh.glowIntensity);
+        }
         m_renderablesCache.push_back(r);
     }
     m_renderablesDirty = false;

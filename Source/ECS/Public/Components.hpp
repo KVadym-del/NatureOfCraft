@@ -88,6 +88,13 @@ struct MeshComponent
     int32_t materialIndex{0};
     std::string assetPath; // original asset path, used for serialization
     std::string materialName; // name of the assigned editor material
+    bool glowEnabled{false};
+    DirectX::XMFLOAT3 glowColor{1.0f, 0.7f, 0.25f};
+    float glowIntensity{1.5f};
+    bool outlineEnabled{false};
+    bool outlineThroughWalls{false};
+    DirectX::XMFLOAT3 outlineColor{0.2f, 0.9f, 1.0f};
+    float outlineThickness{2.0f};
 };
 
 /// Camera component. The entity with isActive=true is the rendering camera.

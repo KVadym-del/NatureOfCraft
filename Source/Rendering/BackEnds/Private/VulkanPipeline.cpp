@@ -68,10 +68,10 @@ Result<> VulkanPipeline::initialize(
     std::array<VkVertexInputBindingDescription, 2> bindingDescriptions{};
     bindingDescriptions[0] = vertexBindingDescription;
     bindingDescriptions[1].binding = 1;
-    bindingDescriptions[1].stride = sizeof(float) * 32; // mat4 mvp + mat4 model
+    bindingDescriptions[1].stride = sizeof(float) * 36; // mat4 mvp + mat4 model + vec4 glow
     bindingDescriptions[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 
-    std::array<VkVertexInputAttributeDescription, 12> attributeDescriptions{};
+    std::array<VkVertexInputAttributeDescription, 13> attributeDescriptions{};
     for (std::size_t i = 0; i < vertexAttributeDescriptions.size(); ++i)
         attributeDescriptions[i] = vertexAttributeDescriptions[i];
 
@@ -92,6 +92,10 @@ Result<> VulkanPipeline::initialize(
         attributeDescriptions[8 + i].format = VK_FORMAT_R32G32B32A32_SFLOAT;
         attributeDescriptions[8 + i].offset = (vec4Size * 4) + (vec4Size * i);
     }
+    attributeDescriptions[12].binding = 1;
+    attributeDescriptions[12].location = 12;
+    attributeDescriptions[12].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    attributeDescriptions[12].offset = vec4Size * 8;
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;

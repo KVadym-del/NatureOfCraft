@@ -37,9 +37,11 @@ static fb::Offset<fbl::EntityData> serialize_entity(fb::FlatBufferBuilder& fbb, 
     fb::Offset<fbl::MeshComponentData> meshOffset = 0;
     if (const auto* mc = reg.try_get<MeshComponent>(entity))
     {
+        fbl::Vec3 glowColor(mc->glowColor.x, mc->glowColor.y, mc->glowColor.z);
         meshOffset = fbl::CreateMeshComponentData(fbb, mc->meshIndex, mc->materialIndex,
                                                    mc->assetPath.empty() ? 0 : fbb.CreateString(mc->assetPath),
-                                                   mc->materialName.empty() ? 0 : fbb.CreateString(mc->materialName));
+                                                   mc->materialName.empty() ? 0 : fbb.CreateString(mc->materialName),
+                                                   mc->glowEnabled, &glowColor, mc->glowIntensity);
     }
 
     // Camera component (optional)
@@ -140,6 +142,10 @@ static entt::entity deserialize_entity(World& world, const fbl::EntityData* data
         mc.materialIndex = md->material_index();
         mc.assetPath = md->asset_path() ? md->asset_path()->str() : "";
         mc.materialName = md->material_name() ? md->material_name()->str() : "";
+        mc.glowEnabled = md->glow_enabled();
+        if (md->glow_color())
+            mc.glowColor = {md->glow_color()->x(), md->glow_color()->y(), md->glow_color()->z()};
+        mc.glowIntensity = md->glow_intensity();
     }
 
     // Camera component
