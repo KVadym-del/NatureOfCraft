@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 class World;
 
@@ -27,6 +28,8 @@ class NOC_EXPORT PhysicsWorld
 
     void set_enabled(bool enabled) noexcept;
     bool is_enabled() const noexcept;
+
+    void set_asset_root(const std::string& rootPath);
 
     void step(World& world, float deltaTime);
     void clear();

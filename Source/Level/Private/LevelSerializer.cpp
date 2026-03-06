@@ -66,10 +66,12 @@ static fb::Offset<fbl::EntityData> serialize_entity(fb::FlatBufferBuilder& fbb, 
     if (const auto* pc = reg.try_get<PhysicsBodyComponent>(entity))
     {
         fbl::Vec3 halfExtents(pc->halfExtents.x, pc->halfExtents.y, pc->halfExtents.z);
+        fbl::Vec3 colliderOffset(pc->colliderOffset.x, pc->colliderOffset.y, pc->colliderOffset.z);
         physicsOffset =
             fbl::CreatePhysicsBodyComponentData(fbb, pc->enabled, static_cast<std::uint8_t>(pc->motionType),
-                                                &halfExtents, pc->friction, pc->restitution, pc->useGravity,
-                                                pc->linearDamping, pc->angularDamping);
+                                                static_cast<std::uint8_t>(pc->shapeType), &halfExtents, pc->radius,
+                                                pc->halfHeight, &colliderOffset, pc->friction, pc->restitution,
+                                                pc->useGravity, pc->linearDamping, pc->angularDamping);
     }
 
     // Children (recursive)
@@ -176,8 +178,17 @@ static entt::entity deserialize_entity(World& world, const fbl::EntityData* data
         auto& pc = world.registry().emplace<PhysicsBodyComponent>(entity);
         pc.enabled = pd->enabled();
         pc.motionType = static_cast<PhysicsBodyMotionType>(pd->motion_type());
+        const auto shapeTypeRaw = static_cast<PhysicsColliderShapeType>(pd->shape_type());
+        if (shapeTypeRaw <= PhysicsColliderShapeType::MutableCompound)
+            pc.shapeType = shapeTypeRaw;
+        else
+            pc.shapeType = PhysicsColliderShapeType::Box;
         if (pd->half_extents())
             pc.halfExtents = {pd->half_extents()->x(), pd->half_extents()->y(), pd->half_extents()->z()};
+        pc.radius = pd->radius();
+        pc.halfHeight = pd->half_height();
+        if (pd->collider_offset())
+            pc.colliderOffset = {pd->collider_offset()->x(), pd->collider_offset()->y(), pd->collider_offset()->z()};
         pc.friction = pd->friction();
         pc.restitution = pd->restitution();
         pc.useGravity = pd->use_gravity();

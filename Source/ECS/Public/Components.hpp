@@ -135,11 +135,27 @@ enum class PhysicsBodyMotionType : std::uint8_t
     Kinematic = 2,
 };
 
+enum class PhysicsColliderShapeType : std::uint8_t
+{
+    Box = 0,
+    Sphere = 1,
+    Capsule = 2,
+    Cylinder = 3,
+    Mesh = 4,
+    ConvexHull = 5,
+    StaticCompound = 6,
+    MutableCompound = 7,
+};
+
 struct PhysicsBodyComponent
 {
     bool enabled{true};
     PhysicsBodyMotionType motionType{PhysicsBodyMotionType::Dynamic};
+    PhysicsColliderShapeType shapeType{PhysicsColliderShapeType::Box};
     DirectX::XMFLOAT3 halfExtents{0.5f, 0.5f, 0.5f};
+    float radius{0.5f};
+    float halfHeight{0.5f};
+    DirectX::XMFLOAT3 colliderOffset{0.0f, 0.0f, 0.0f};
     float friction{0.5f};
     float restitution{0.0f};
     bool useGravity{true};

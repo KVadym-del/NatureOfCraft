@@ -81,6 +81,159 @@ static const char* present_mode_name(VkPresentModeKHR mode)
     }
 }
 
+static void fit_physics_body_to_mesh_bounds(PhysicsBodyComponent& body, const MeshBounds& bounds)
+{
+    if (!bounds.valid)
+        return;
+
+    const DirectX::XMFLOAT3 extents{
+        std::max((bounds.max.x - bounds.min.x) * 0.5f, 0.01f),
+        std::max((bounds.max.y - bounds.min.y) * 0.5f, 0.01f),
+        std::max((bounds.max.z - bounds.min.z) * 0.5f, 0.01f),
+    };
+
+    body.halfExtents = extents;
+    body.colliderOffset = bounds.center;
+    body.radius = std::max({extents.x, extents.y, extents.z}) * 0.5f;
+    body.halfHeight = std::max(extents.y - body.radius, 0.01f);
+}
+
+static bool fit_physics_body_to_entity_mesh_bounds(World& world,
+                                                   IRenderer& renderer,
+                                                   entt::entity rootEntity,
+                                                   PhysicsBodyComponent& body)
+{
+    using namespace DirectX;
+
+    auto& reg = world.registry();
+    const auto* rootCache = reg.try_get<WorldMatrixCache>(rootEntity);
+    if (!rootCache)
+        return false;
+
+    const XMMATRIX rootWorld = XMLoadFloat4x4(&rootCache->worldMatrix);
+    const XMMATRIX invRootWorld = XMMatrixInverse(nullptr, rootWorld);
+
+    bool hasBounds = false;
+    XMFLOAT3 minPoint{};
+    XMFLOAT3 maxPoint{};
+
+    auto accumulate_point = [&](const XMFLOAT3& localPoint) {
+        if (!hasBounds)
+        {
+            minPoint = localPoint;
+            maxPoint = localPoint;
+            hasBounds = true;
+            return;
+        }
+        minPoint.x = std::min(minPoint.x, localPoint.x);
+        minPoint.y = std::min(minPoint.y, localPoint.y);
+        minPoint.z = std::min(minPoint.z, localPoint.z);
+        maxPoint.x = std::max(maxPoint.x, localPoint.x);
+        maxPoint.y = std::max(maxPoint.y, localPoint.y);
+        maxPoint.z = std::max(maxPoint.z, localPoint.z);
+    };
+
+    std::vector<entt::entity> stack{rootEntity};
+    while (!stack.empty())
+    {
+        const entt::entity current = stack.back();
+        stack.pop_back();
+
+        if (!reg.valid(current))
+            continue;
+
+        if (const auto* meshComp = reg.try_get<MeshComponent>(current))
+        {
+            if (meshComp->meshIndex >= 0)
+            {
+                const auto* cache = reg.try_get<WorldMatrixCache>(current);
+                if (cache)
+                {
+                    const MeshBounds bounds = renderer.get_mesh_bounds(static_cast<std::uint32_t>(meshComp->meshIndex));
+                    if (bounds.valid)
+                    {
+                        const XMMATRIX meshWorld = XMLoadFloat4x4(&cache->worldMatrix);
+                        constexpr std::array<XMFLOAT3, 8> corners = {
+                            XMFLOAT3{-1, -1, -1}, XMFLOAT3{1, -1, -1}, XMFLOAT3{1, 1, -1}, XMFLOAT3{-1, 1, -1},
+                            XMFLOAT3{-1, -1, 1},  XMFLOAT3{1, -1, 1},  XMFLOAT3{1, 1, 1},  XMFLOAT3{-1, 1, 1},
+                        };
+
+                        const XMFLOAT3 center = bounds.center;
+                        const XMFLOAT3 extents{
+                            std::max((bounds.max.x - bounds.min.x) * 0.5f, 0.0f),
+                            std::max((bounds.max.y - bounds.min.y) * 0.5f, 0.0f),
+                            std::max((bounds.max.z - bounds.min.z) * 0.5f, 0.0f),
+                        };
+
+                        for (const auto& c : corners)
+                        {
+                            const XMFLOAT3 localCorner{
+                                center.x + c.x * extents.x,
+                                center.y + c.y * extents.y,
+                                center.z + c.z * extents.z,
+                            };
+
+                            const XMVECTOR meshLocal = XMVectorSet(localCorner.x, localCorner.y, localCorner.z, 1.0f);
+                            const XMVECTOR worldPoint = XMVector3TransformCoord(meshLocal, meshWorld);
+                            const XMVECTOR rootLocal = XMVector3TransformCoord(worldPoint, invRootWorld);
+                            XMFLOAT3 p{};
+                            XMStoreFloat3(&p, rootLocal);
+                            accumulate_point(p);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (const auto* hierarchy = reg.try_get<HierarchyComponent>(current))
+        {
+            for (entt::entity child : hierarchy->children)
+            {
+                if (reg.valid(child))
+                    stack.push_back(child);
+            }
+        }
+    }
+
+    if (!hasBounds)
+        return false;
+
+    const MeshBounds mergedBounds{
+        minPoint,
+        maxPoint,
+        XMFLOAT3{(minPoint.x + maxPoint.x) * 0.5f, (minPoint.y + maxPoint.y) * 0.5f, (minPoint.z + maxPoint.z) * 0.5f},
+        0.0f,
+        true,
+    };
+    fit_physics_body_to_mesh_bounds(body, mergedBounds);
+    return true;
+}
+
+static const char* physics_collider_shape_name(PhysicsColliderShapeType shapeType)
+{
+    switch (shapeType)
+    {
+    case PhysicsColliderShapeType::Box:
+        return "Box";
+    case PhysicsColliderShapeType::Sphere:
+        return "Sphere";
+    case PhysicsColliderShapeType::Capsule:
+        return "Capsule";
+    case PhysicsColliderShapeType::Cylinder:
+        return "Cylinder";
+    case PhysicsColliderShapeType::Mesh:
+        return "Mesh";
+    case PhysicsColliderShapeType::ConvexHull:
+        return "Convex Hull";
+    case PhysicsColliderShapeType::StaticCompound:
+        return "Static Compound";
+    case PhysicsColliderShapeType::MutableCompound:
+        return "Mutable Compound";
+    default:
+        return "Box";
+    }
+}
+
 static bool project_world_to_screen(const DirectX::XMFLOAT3& worldPos, const DirectX::XMMATRIX& viewProj,
                                     const ImVec2& viewportMin, const ImVec2& viewportSize, ImVec2& outScreen)
 {
@@ -1380,6 +1533,7 @@ int main()
         graphicsApplyRequested = false;
         physicsSimulationEnabled = false;
         physicsWorld.set_enabled(false);
+        physicsWorld.set_asset_root(project ? project->root_path() : std::string{});
         requestDefaultDockLayout = true;
 
         World& world = level->world();
@@ -1535,6 +1689,7 @@ int main()
         graphicsApplyRequested = false;
         physicsSimulationEnabled = false;
         physicsWorld.set_enabled(false);
+        physicsWorld.set_asset_root(std::string{});
         requestDefaultDockLayout = true;
         editorState = EditorState::ProjectBrowser;
     };
@@ -3028,11 +3183,75 @@ int main()
                                 ImGui::EndCombo();
                             }
 
-                            if (ImGui::DragFloat3("Half Extents", &pc->halfExtents.x, 0.01f, 0.01f, 1000.0f))
+                            if (ImGui::BeginCombo("Collider Shape", physics_collider_shape_name(pc->shapeType)))
+                            {
+                                for (std::int32_t i = 0; i < 8; ++i)
+                                {
+                                    const auto shape = static_cast<PhysicsColliderShapeType>(i);
+                                    const bool selected = (pc->shapeType == shape);
+                                    if (ImGui::Selectable(physics_collider_shape_name(shape), selected))
+                                    {
+                                        pc->shapeType = shape;
+                                        if (shape == PhysicsColliderShapeType::StaticCompound)
+                                        {
+                                            pc->motionType = PhysicsBodyMotionType::Static;
+                                        }
+                                        (void)fit_physics_body_to_entity_mesh_bounds(world, renderer, selectedEntity, *pc);
+                                        if (shape == PhysicsColliderShapeType::Mesh)
+                                            pc->colliderOffset = {0.0f, 0.0f, 0.0f};
+                                        pc->runtimeDirty = true;
+                                        level->mark_dirty();
+                                    }
+                                    if (selected)
+                                        ImGui::SetItemDefaultFocus();
+                                }
+                                ImGui::EndCombo();
+                            }
+
+                            if (pc->shapeType == PhysicsColliderShapeType::Box ||
+                                pc->shapeType == PhysicsColliderShapeType::Mesh ||
+                                pc->shapeType == PhysicsColliderShapeType::ConvexHull ||
+                                pc->shapeType == PhysicsColliderShapeType::StaticCompound ||
+                                pc->shapeType == PhysicsColliderShapeType::MutableCompound)
+                            {
+                                if (ImGui::DragFloat3("Half Extents", &pc->halfExtents.x, 0.01f, 0.01f, 1000.0f))
+                                {
+                                    pc->runtimeDirty = true;
+                                    level->mark_dirty();
+                                }
+                            }
+                            else
+                            {
+                                if (ImGui::DragFloat("Radius", &pc->radius, 0.01f, 0.01f, 1000.0f))
+                                {
+                                    pc->runtimeDirty = true;
+                                    level->mark_dirty();
+                                }
+
+                                if (pc->shapeType == PhysicsColliderShapeType::Capsule ||
+                                    pc->shapeType == PhysicsColliderShapeType::Cylinder)
+                                {
+                                    if (ImGui::DragFloat("Half Height", &pc->halfHeight, 0.01f, 0.01f, 1000.0f))
+                                    {
+                                        pc->runtimeDirty = true;
+                                        level->mark_dirty();
+                                    }
+                                }
+                            }
+
+                            if (ImGui::DragFloat3("Collider Offset", &pc->colliderOffset.x, 0.01f, -1000.0f, 1000.0f))
                             {
                                 pc->runtimeDirty = true;
                                 level->mark_dirty();
                             }
+
+                            if (pc->shapeType == PhysicsColliderShapeType::StaticCompound &&
+                                pc->motionType != PhysicsBodyMotionType::Static)
+                            {
+                                pc->motionType = PhysicsBodyMotionType::Static;
+                                pc->runtimeDirty = true;
+                            }
+
                             if (ImGui::SliderFloat("Friction", &pc->friction, 0.0f, 1.0f))
                             {
                                 pc->runtimeDirty = true;
@@ -3068,7 +3287,8 @@ int main()
                         }
                         else if (ImGui::Button("Add Physics Body"))
                         {
-                            world.registry().emplace<PhysicsBodyComponent>(selectedEntity);
+                            auto& body = world.registry().emplace<PhysicsBodyComponent>(selectedEntity);
+                            (void)fit_physics_body_to_entity_mesh_bounds(world, renderer, selectedEntity, body);
                             level->mark_dirty();
                         }
 
@@ -3139,6 +3359,15 @@ int main()
                         {0, 4}, {1, 5}, {2, 6}, {3, 7},
                     };
 
+                    const auto project_point = [&](const XMMATRIX& worldMatrix, const XMFLOAT3& localPoint,
+                                                   ImVec2& out) -> bool {
+                        const XMVECTOR localPos = XMVectorSet(localPoint.x, localPoint.y, localPoint.z, 1.0f);
+                        const XMVECTOR worldPos = XMVector3TransformCoord(localPos, worldMatrix);
+                        XMFLOAT3 worldPoint{};
+                        XMStoreFloat3(&worldPoint, worldPos);
+                        return project_world_to_screen(worldPoint, viewProj, viewportImageMin, viewportImageSize, out);
+                    };
+
                     const auto draw_box = [&](const XMMATRIX& worldMatrix, const XMFLOAT3& halfExtents, ImU32 color,
                                               float thickness) {
                         constexpr std::array<XMFLOAT3, 8> localCorners = {
@@ -3156,19 +3385,127 @@ int main()
                                 localCorners[i].y * halfExtents.y,
                                 localCorners[i].z * halfExtents.z,
                             };
-
-                            const XMVECTOR localPos = XMVectorSet(scaled.x, scaled.y, scaled.z, 1.0f);
-                            const XMVECTOR worldPos = XMVector3TransformCoord(localPos, worldMatrix);
-                            XMFLOAT3 worldPoint{};
-                            XMStoreFloat3(&worldPoint, worldPos);
-                            valid[i] = project_world_to_screen(worldPoint, viewProj, viewportImageMin, viewportImageSize,
-                                                               projected[i]);
+                            valid[i] = project_point(worldMatrix, scaled, projected[i]);
                         }
 
                         for (const auto& [a, b] : edges)
                         {
                             if (valid[a] && valid[b])
                                 drawList->AddLine(projected[a], projected[b], color, thickness);
+                        }
+                    };
+
+                    const auto draw_circle = [&](const XMMATRIX& worldMatrix,
+                                                 const XMFLOAT3& center,
+                                                 float radius,
+                                                 int axis,
+                                                 ImU32 color,
+                                                 float thickness) {
+                        constexpr int segments = 24;
+                        ImVec2 prev{};
+                        bool prevValid = false;
+                        for (int i = 0; i <= segments; ++i)
+                        {
+                            const float t = (static_cast<float>(i) / static_cast<float>(segments)) * DirectX::XM_2PI;
+                            const float c = std::cos(t);
+                            const float s = std::sin(t);
+
+                            XMFLOAT3 p = center;
+                            if (axis == 0)
+                            {
+                                p.y += c * radius;
+                                p.z += s * radius;
+                            }
+                            else if (axis == 1)
+                            {
+                                p.x += c * radius;
+                                p.z += s * radius;
+                            }
+                            else
+                            {
+                                p.x += c * radius;
+                                p.y += s * radius;
+                            }
+
+                            ImVec2 curr{};
+                            const bool currValid = project_point(worldMatrix, p, curr);
+                            if (prevValid && currValid)
+                                drawList->AddLine(prev, curr, color, thickness);
+                            prev = curr;
+                            prevValid = currValid;
+                        }
+                    };
+
+                    const auto draw_sphere = [&](const XMMATRIX& worldMatrix, float radius, ImU32 color, float thickness) {
+                        draw_circle(worldMatrix, XMFLOAT3{0.0f, 0.0f, 0.0f}, radius, 0, color, thickness);
+                        draw_circle(worldMatrix, XMFLOAT3{0.0f, 0.0f, 0.0f}, radius, 1, color, thickness);
+                        draw_circle(worldMatrix, XMFLOAT3{0.0f, 0.0f, 0.0f}, radius, 2, color, thickness);
+                    };
+
+                    const auto draw_capsule_or_cylinder = [&](const XMMATRIX& worldMatrix,
+                                                               float radius,
+                                                               float halfHeight,
+                                                               bool drawCaps,
+                                                               ImU32 color,
+                                                               float thickness) {
+                        const XMFLOAT3 top{0.0f, halfHeight, 0.0f};
+                        const XMFLOAT3 bottom{0.0f, -halfHeight, 0.0f};
+                        draw_circle(worldMatrix, top, radius, 1, color, thickness);
+                        draw_circle(worldMatrix, bottom, radius, 1, color, thickness);
+
+                        constexpr std::array<XMFLOAT3, 4> linePoints = {
+                            XMFLOAT3{1.0f, 0.0f, 0.0f}, XMFLOAT3{-1.0f, 0.0f, 0.0f},
+                            XMFLOAT3{0.0f, 0.0f, 1.0f}, XMFLOAT3{0.0f, 0.0f, -1.0f},
+                        };
+
+                        for (const auto& p : linePoints)
+                        {
+                            ImVec2 a{}, b{};
+                            const bool validA = project_point(worldMatrix, XMFLOAT3{p.x * radius, halfHeight, p.z * radius}, a);
+                            const bool validB = project_point(worldMatrix, XMFLOAT3{p.x * radius, -halfHeight, p.z * radius}, b);
+                            if (validA && validB)
+                                drawList->AddLine(a, b, color, thickness);
+                        }
+
+                        if (drawCaps)
+                        {
+                            draw_circle(worldMatrix, top, radius, 0, color, thickness);
+                            draw_circle(worldMatrix, top, radius, 2, color, thickness);
+                            draw_circle(worldMatrix, bottom, radius, 0, color, thickness);
+                            draw_circle(worldMatrix, bottom, radius, 2, color, thickness);
+                        }
+                    };
+
+                    const auto draw_mesh_wireframe = [&](const XMMATRIX& worldMatrix,
+                                                         const MeshData& meshData,
+                                                         ImU32 color,
+                                                         float thickness) {
+                        if (meshData.vertices.empty() || meshData.indices.size() < 3)
+                            return;
+
+                        for (size_t i = 0; i + 2 < meshData.indices.size(); i += 3)
+                        {
+                            const std::uint32_t i0 = meshData.indices[i];
+                            const std::uint32_t i1 = meshData.indices[i + 1];
+                            const std::uint32_t i2 = meshData.indices[i + 2];
+                            if (i0 >= meshData.vertices.size() || i1 >= meshData.vertices.size() || i2 >= meshData.vertices.size())
+                                continue;
+
+                            const auto& p0 = meshData.vertices[i0].pos;
+                            const auto& p1 = meshData.vertices[i1].pos;
+                            const auto& p2 = meshData.vertices[i2].pos;
+
+                            ImVec2 a{}, b{}, c{};
+                            const bool va = project_point(worldMatrix, p0, a);
+                            const bool vb = project_point(worldMatrix, p1, b);
+                            const bool vc = project_point(worldMatrix, p2, c);
+
+                            if (va && vb)
+                                drawList->AddLine(a, b, color, thickness);
+                            if (vb && vc)
+                                drawList->AddLine(b, c, color, thickness);
+                            if (vc && va)
+                                drawList->AddLine(c, a, color, thickness);
                         }
                     };
 
@@ -3181,8 +3518,111 @@ int main()
                                 continue;
 
                             const auto& cache = debugView.get<WorldMatrixCache>(e);
-                            XMMATRIX worldMat = XMLoadFloat4x4(&cache.worldMatrix);
-                            draw_box(worldMat, body.halfExtents, lineColor, 1.5f);
+                            const XMMATRIX worldMat = XMLoadFloat4x4(&cache.worldMatrix);
+                            const XMMATRIX colliderWorld = XMMatrixMultiply(
+                                XMMatrixTranslation(body.colliderOffset.x, body.colliderOffset.y, body.colliderOffset.z),
+                                worldMat);
+
+                            switch (body.shapeType)
+                            {
+                            case PhysicsColliderShapeType::Sphere:
+                                draw_sphere(colliderWorld, std::max(body.radius, 0.01f), lineColor, 1.5f);
+                                break;
+                            case PhysicsColliderShapeType::Capsule:
+                                draw_capsule_or_cylinder(colliderWorld,
+                                                         std::max(body.radius, 0.01f),
+                                                         std::max(body.halfHeight, 0.01f),
+                                                         true,
+                                                         lineColor,
+                                                         1.5f);
+                                break;
+                            case PhysicsColliderShapeType::Cylinder:
+                                draw_capsule_or_cylinder(colliderWorld,
+                                                         std::max(body.radius, 0.01f),
+                                                         std::max(body.halfHeight, 0.01f),
+                                                         false,
+                                                         lineColor,
+                                                         1.5f);
+                                break;
+                            case PhysicsColliderShapeType::ConvexHull:
+                            case PhysicsColliderShapeType::StaticCompound:
+                            case PhysicsColliderShapeType::MutableCompound:
+                            case PhysicsColliderShapeType::Mesh:
+                            {
+                                bool drewMesh = false;
+                                if (body.shapeType == PhysicsColliderShapeType::Mesh)
+                                {
+                                    const MeshComponent* meshComp = nullptr;
+                                    const NameComponent* nameComp = nullptr;
+
+                                    std::vector<entt::entity> stack{e};
+                                    while (!stack.empty() && meshComp == nullptr)
+                                    {
+                                        const entt::entity current = stack.back();
+                                        stack.pop_back();
+
+                                        if (!world.registry().valid(current))
+                                            continue;
+
+                                        if (const auto* mc = world.registry().try_get<MeshComponent>(current))
+                                        {
+                                            if (!mc->assetPath.empty())
+                                            {
+                                                meshComp = mc;
+                                                nameComp = world.registry().try_get<NameComponent>(current);
+                                                break;
+                                            }
+                                        }
+
+                                        if (const auto* hierarchy = world.registry().try_get<HierarchyComponent>(current))
+                                        {
+                                            for (entt::entity child : hierarchy->children)
+                                            {
+                                                if (world.registry().valid(child))
+                                                    stack.push_back(child);
+                                            }
+                                        }
+                                    }
+
+                                    if (meshComp && !meshComp->assetPath.empty())
+                                    {
+                                        const std::filesystem::path loadPath = resolve_texture_load_path(meshComp->assetPath, project.get());
+                                        auto modelHandle = assetManager.load_model(loadPath.string());
+                                        if (modelHandle)
+                                        {
+                                            const MeshData* meshData = nullptr;
+                                            if (nameComp)
+                                            {
+                                                for (const auto& modelMesh : modelHandle->meshes)
+                                                {
+                                                    if (modelMesh.name == nameComp->name)
+                                                    {
+                                                        meshData = &modelMesh;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            if (!meshData && !modelHandle->meshes.empty())
+                                                meshData = &modelHandle->meshes.front();
+
+                                            if (meshData)
+                                            {
+                                                draw_mesh_wireframe(colliderWorld, *meshData, lineColor, 1.0f);
+                                                drewMesh = true;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (!drewMesh)
+                                    draw_box(colliderWorld, body.halfExtents, lineColor, 1.5f);
+                                break;
+                            }
+                            case PhysicsColliderShapeType::Box:
+                            default:
+                                draw_box(colliderWorld, body.halfExtents, lineColor, 1.5f);
+                                break;
+                            }
                         }
                     }
 

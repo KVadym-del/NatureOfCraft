@@ -53,7 +53,11 @@ table ScriptComponentData {
 table PhysicsBodyComponentData {
     enabled: bool = true;
     motion_type: uint8 = 1; // 0=Static, 1=Dynamic, 2=Kinematic
+    shape_type: uint8 = 0; // 0=Box, 1=Sphere, 2=Capsule, 3=Cylinder, 4=Mesh, 5=ConvexHull, 6=StaticCompound, 7=MutableCompound
     half_extents: Vec3;
+    radius: float = 0.5;
+    half_height: float = 0.5;
+    collider_offset: Vec3;
     friction: float = 0.5;
     restitution: float = 0.0;
     use_gravity: bool = true;

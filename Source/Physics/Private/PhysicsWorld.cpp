@@ -2,6 +2,7 @@
 
 #include <ECS/Public/Components.hpp>
 #include <ECS/Public/World.hpp>
+#include <Assets/Public/AssetManager.hpp>
 
 #include <Jolt/Jolt.h>
 #include <Jolt/Core/Factory.h>
@@ -17,6 +18,13 @@
 #include <Jolt/Physics/Collision/ObjectLayer.h>
 #include <Jolt/Physics/Collision/ObjectLayerPairFilterTable.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
+#include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
+#include <Jolt/Physics/Collision/Shape/CylinderShape.h>
+#include <Jolt/Physics/Collision/Shape/MeshShape.h>
+#include <Jolt/Physics/Collision/Shape/MutableCompoundShape.h>
+#include <Jolt/Physics/Collision/Shape/SphereShape.h>
+#include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
 
@@ -25,6 +33,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdarg>
+#include <filesystem>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -85,7 +94,11 @@ static bool scale_changed(const std::array<float, 3>& a, const std::array<float,
 struct PhysicsStateKey
 {
     PhysicsBodyMotionType motionType{PhysicsBodyMotionType::Dynamic};
+    PhysicsColliderShapeType shapeType{PhysicsColliderShapeType::Box};
     DirectX::XMFLOAT3 halfExtents{0.5f, 0.5f, 0.5f};
+    float radius{0.5f};
+    float halfHeight{0.5f};
+    DirectX::XMFLOAT3 colliderOffset{0.0f, 0.0f, 0.0f};
     float friction{0.5f};
     float restitution{0.0f};
     bool useGravity{true};
@@ -97,7 +110,11 @@ static PhysicsStateKey make_state_key(const PhysicsBodyComponent& bodyComp) noex
 {
     PhysicsStateKey key{};
     key.motionType = bodyComp.motionType;
+    key.shapeType = bodyComp.shapeType;
     key.halfExtents = bodyComp.halfExtents;
+    key.radius = bodyComp.radius;
+    key.halfHeight = bodyComp.halfHeight;
+    key.colliderOffset = bodyComp.colliderOffset;
     key.friction = bodyComp.friction;
     key.restitution = bodyComp.restitution;
     key.useGravity = bodyComp.useGravity;
@@ -109,11 +126,94 @@ static PhysicsStateKey make_state_key(const PhysicsBodyComponent& bodyComp) noex
 static bool state_key_changed(const PhysicsStateKey& a, const PhysicsStateKey& b) noexcept
 {
     constexpr float eps = 0.0001f;
-    return a.motionType != b.motionType || std::abs(a.halfExtents.x - b.halfExtents.x) > eps ||
+    return a.motionType != b.motionType || a.shapeType != b.shapeType ||
+           std::abs(a.halfExtents.x - b.halfExtents.x) > eps ||
            std::abs(a.halfExtents.y - b.halfExtents.y) > eps || std::abs(a.halfExtents.z - b.halfExtents.z) > eps ||
+           std::abs(a.radius - b.radius) > eps || std::abs(a.halfHeight - b.halfHeight) > eps ||
+           std::abs(a.colliderOffset.x - b.colliderOffset.x) > eps ||
+           std::abs(a.colliderOffset.y - b.colliderOffset.y) > eps ||
+           std::abs(a.colliderOffset.z - b.colliderOffset.z) > eps ||
            std::abs(a.friction - b.friction) > eps || std::abs(a.restitution - b.restitution) > eps ||
            a.useGravity != b.useGravity || std::abs(a.linearDamping - b.linearDamping) > eps ||
            std::abs(a.angularDamping - b.angularDamping) > eps;
+}
+
+static JPH::Quat to_jolt_quat(const DirectX::XMFLOAT4& rotation) noexcept
+{
+    return JPH::Quat(rotation.x, rotation.y, rotation.z, rotation.w);
+}
+
+static DirectX::XMFLOAT3 rotate_vector(const DirectX::XMFLOAT3& vector, const DirectX::XMFLOAT4& rotation) noexcept
+{
+    using namespace DirectX;
+    const XMVECTOR local = XMVectorSet(vector.x, vector.y, vector.z, 0.0f);
+    const XMVECTOR q = XMLoadFloat4(&rotation);
+    XMFLOAT3 out{};
+    XMStoreFloat3(&out, XMVector3Rotate(local, q));
+    return out;
+}
+
+static JPH::RVec3 to_body_position(const TransformComponent& transform, const PhysicsBodyComponent& bodyComp) noexcept
+{
+    const DirectX::XMFLOAT3 rotatedOffset = rotate_vector(bodyComp.colliderOffset, transform.rotation);
+    return JPH::RVec3(transform.position.x + rotatedOffset.x,
+                      transform.position.y + rotatedOffset.y,
+                      transform.position.z + rotatedOffset.z);
+}
+
+static DirectX::XMFLOAT3 to_entity_position(const JPH::RVec3& bodyPosition,
+                                            const DirectX::XMFLOAT4& rotation,
+                                            const DirectX::XMFLOAT3& colliderOffset) noexcept
+{
+    const DirectX::XMFLOAT3 rotatedOffset = rotate_vector(colliderOffset, rotation);
+    return {
+        static_cast<float>(bodyPosition.GetX()) - rotatedOffset.x,
+        static_cast<float>(bodyPosition.GetY()) - rotatedOffset.y,
+        static_cast<float>(bodyPosition.GetZ()) - rotatedOffset.z,
+    };
+}
+
+static JPH::ShapeRefC create_primitive_shape(const PhysicsBodyComponent& bodyComp, const TransformComponent& transform)
+{
+    const float scaleX = std::max(std::abs(transform.scale.x), 0.0001f);
+    const float scaleY = std::max(std::abs(transform.scale.y), 0.0001f);
+    const float scaleZ = std::max(std::abs(transform.scale.z), 0.0001f);
+
+    switch (bodyComp.shapeType)
+    {
+    case PhysicsColliderShapeType::Sphere:
+    {
+        const float sphereScale = std::max({scaleX, scaleY, scaleZ});
+        const float radius = std::max(bodyComp.radius * sphereScale, 0.01f);
+        return new JPH::SphereShape(radius);
+    }
+    case PhysicsColliderShapeType::Capsule:
+    {
+        const float radialScale = std::max(scaleX, scaleZ);
+        const float radius = std::max(bodyComp.radius * radialScale, 0.01f);
+        const float halfHeight = std::max(bodyComp.halfHeight * scaleY, 0.01f);
+        return new JPH::CapsuleShape(halfHeight, radius);
+    }
+    case PhysicsColliderShapeType::Cylinder:
+    {
+        const float radialScale = std::max(scaleX, scaleZ);
+        const float radius = std::max(bodyComp.radius * radialScale, 0.01f);
+        const float halfHeight = std::max(bodyComp.halfHeight * scaleY, 0.01f);
+        return new JPH::CylinderShape(halfHeight, radius);
+    }
+    case PhysicsColliderShapeType::Mesh:
+    case PhysicsColliderShapeType::ConvexHull:
+    case PhysicsColliderShapeType::StaticCompound:
+    case PhysicsColliderShapeType::MutableCompound:
+    case PhysicsColliderShapeType::Box:
+    default:
+    {
+        const float scaledX = std::max(bodyComp.halfExtents.x * scaleX, 0.01f);
+        const float scaledY = std::max(bodyComp.halfExtents.y * scaleY, 0.01f);
+        const float scaledZ = std::max(bodyComp.halfExtents.z * scaleZ, 0.01f);
+        return new JPH::BoxShape(JPH::Vec3(scaledX, scaledY, scaledZ));
+    }
+    }
 }
 
 static void jolt_trace_impl(const char* inFMT, ...)
@@ -163,6 +263,246 @@ struct PhysicsWorld::Impl
     std::unordered_map<std::uint32_t, JPH::BodyID> bodies;
     std::unordered_map<std::uint32_t, std::array<float, 3>> bodyShapeScale;
     std::unordered_map<std::uint32_t, PhysicsStateKey> bodyState;
+    AssetManager assetManager;
+    std::filesystem::path assetRoot;
+
+    std::filesystem::path resolve_asset_load_path(const std::string& assetPath) const
+    {
+        std::filesystem::path path(assetPath);
+        if (path.empty())
+            return {};
+        if (path.is_absolute())
+            return path;
+
+        if (!assetRoot.empty())
+        {
+            const std::filesystem::path projectPath = assetRoot / path;
+            std::error_code ec;
+            if (std::filesystem::exists(projectPath, ec))
+                return projectPath;
+        }
+
+        std::error_code ec;
+        if (std::filesystem::exists(path, ec))
+            return path;
+
+        auto absolute = std::filesystem::absolute(path, ec);
+        if (!ec && std::filesystem::exists(absolute, ec))
+            return absolute;
+
+        return path;
+    }
+
+    static JPH::ShapeRefC create_shape_from_result(const JPH::ShapeSettings::ShapeResult& shapeResult)
+    {
+        if (!shapeResult.IsValid())
+            return {};
+        return shapeResult.Get();
+    }
+
+    JPH::ShapeRefC create_mesh_shape_from_mesh_data(const MeshData& meshData, const DirectX::XMMATRIX& localToBody)
+    {
+        if (meshData.vertices.empty() || meshData.indices.size() < 3)
+            return {};
+
+        using namespace DirectX;
+        JPH::VertexList vertices;
+        vertices.reserve(meshData.vertices.size());
+        for (const auto& vertex : meshData.vertices)
+        {
+            const XMVECTOR p = XMVectorSet(vertex.pos.x, vertex.pos.y, vertex.pos.z, 1.0f);
+            XMFLOAT3 tp{};
+            XMStoreFloat3(&tp, XMVector3TransformCoord(p, localToBody));
+            vertices.push_back(JPH::Float3(tp.x, tp.y, tp.z));
+        }
+
+        JPH::IndexedTriangleList triangles;
+        triangles.reserve(meshData.indices.size() / 3);
+        for (size_t i = 0; i + 2 < meshData.indices.size(); i += 3)
+            triangles.emplace_back(meshData.indices[i], meshData.indices[i + 1], meshData.indices[i + 2]);
+
+        JPH::MeshShapeSettings settings(std::move(vertices), std::move(triangles));
+        return create_shape_from_result(settings.Create());
+    }
+
+    JPH::ShapeRefC create_convex_hull_shape_from_mesh_data(const MeshData& meshData,
+                                                           const DirectX::XMMATRIX& localToBody)
+    {
+        if (meshData.vertices.empty())
+            return {};
+
+        using namespace DirectX;
+        JPH::Array<JPH::Vec3> points;
+        points.reserve(meshData.vertices.size());
+        for (const auto& vertex : meshData.vertices)
+        {
+            const XMVECTOR p = XMVectorSet(vertex.pos.x, vertex.pos.y, vertex.pos.z, 1.0f);
+            XMFLOAT3 tp{};
+            XMStoreFloat3(&tp, XMVector3TransformCoord(p, localToBody));
+            points.push_back(JPH::Vec3(tp.x, tp.y, tp.z));
+        }
+
+        JPH::ConvexHullShapeSettings settings(points, 0.02f);
+        return create_shape_from_result(settings.Create());
+    }
+
+    static const MeshData* find_matching_mesh(const ModelData& modelData, const std::string& meshName)
+    {
+        if (!meshName.empty())
+        {
+            for (const auto& mesh : modelData.meshes)
+            {
+                if (mesh.name == meshName)
+                    return &mesh;
+            }
+        }
+
+        return modelData.meshes.empty() ? nullptr : &modelData.meshes.front();
+    }
+
+    static bool find_mesh_source_in_subtree(World& world,
+                                            entt::entity root,
+                                            const MeshComponent*& outMeshComp,
+                                            std::string& outMeshName,
+                                            DirectX::XMMATRIX& outLocalToRoot)
+    {
+        using namespace DirectX;
+        auto& reg = world.registry();
+        std::vector<std::pair<entt::entity, XMMATRIX>> stack{{root, XMMatrixIdentity()}};
+
+        while (!stack.empty())
+        {
+            const entt::entity current = stack.back().first;
+            const XMMATRIX parentToRoot = stack.back().second;
+            stack.pop_back();
+
+            if (!reg.valid(current))
+                continue;
+
+            if (const auto* meshComp = reg.try_get<MeshComponent>(current))
+            {
+                if (!meshComp->assetPath.empty())
+                {
+                    outMeshComp = meshComp;
+                    if (const auto* nameComp = reg.try_get<NameComponent>(current))
+                        outMeshName = nameComp->name;
+                    else
+                        outMeshName.clear();
+                    outLocalToRoot = parentToRoot;
+                    return true;
+                }
+            }
+
+            if (const auto* hierarchy = reg.try_get<HierarchyComponent>(current))
+            {
+                for (entt::entity child : hierarchy->children)
+                {
+                    if (reg.valid(child))
+                    {
+                        XMMATRIX childToRoot = parentToRoot;
+                        if (const auto* childTransform = reg.try_get<TransformComponent>(child))
+                            childToRoot = XMMatrixMultiply(childTransform->get_local_matrix(), parentToRoot);
+                        stack.emplace_back(child, childToRoot);
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    JPH::ShapeRefC create_model_shape(World& world,
+                                      entt::entity entity,
+                                      const PhysicsBodyComponent& bodyComp,
+                                      const TransformComponent& transform)
+    {
+        auto& reg = world.registry();
+        using namespace DirectX;
+        const MeshComponent* meshComp = nullptr;
+        std::string meshName;
+        XMMATRIX meshLocalToRoot = XMMatrixIdentity();
+        if (!find_mesh_source_in_subtree(world, entity, meshComp, meshName, meshLocalToRoot))
+            return {};
+
+        const std::filesystem::path modelPath = resolve_asset_load_path(meshComp->assetPath);
+        if (modelPath.empty())
+            return {};
+
+        auto modelHandle = assetManager.load_model(modelPath);
+        if (!modelHandle)
+            return {};
+
+        if (bodyComp.shapeType == PhysicsColliderShapeType::Mesh)
+        {
+            const MeshData* meshData = find_matching_mesh(*modelHandle, meshName);
+            if (auto shape = meshData ? create_mesh_shape_from_mesh_data(*meshData, meshLocalToRoot) : JPH::ShapeRefC{}; shape)
+                return shape;
+        }
+        else if (bodyComp.shapeType == PhysicsColliderShapeType::ConvexHull)
+        {
+            const MeshData* meshData = find_matching_mesh(*modelHandle, meshName);
+            if (auto shape = meshData ? create_convex_hull_shape_from_mesh_data(*meshData, meshLocalToRoot) : JPH::ShapeRefC{}; shape)
+                return shape;
+        }
+        else if (bodyComp.shapeType == PhysicsColliderShapeType::StaticCompound ||
+                 bodyComp.shapeType == PhysicsColliderShapeType::MutableCompound)
+        {
+            if (modelHandle->meshes.empty())
+                return {};
+
+            if (bodyComp.shapeType == PhysicsColliderShapeType::StaticCompound)
+            {
+                JPH::StaticCompoundShapeSettings settings;
+                for (const auto& mesh : modelHandle->meshes)
+                {
+                    auto childShape = create_convex_hull_shape_from_mesh_data(mesh, XMMatrixIdentity());
+                    if (childShape)
+                        settings.AddShape(JPH::Vec3::sZero(), JPH::Quat::sIdentity(), childShape.GetPtr());
+                }
+                if (!settings.mSubShapes.empty())
+                    return create_shape_from_result(settings.Create());
+            }
+            else
+            {
+                JPH::MutableCompoundShapeSettings settings;
+                for (const auto& mesh : modelHandle->meshes)
+                {
+                    auto childShape = create_convex_hull_shape_from_mesh_data(mesh, XMMatrixIdentity());
+                    if (childShape)
+                        settings.AddShape(JPH::Vec3::sZero(), JPH::Quat::sIdentity(), childShape.GetPtr());
+                }
+                if (!settings.mSubShapes.empty())
+                    return create_shape_from_result(settings.Create());
+            }
+        }
+
+        return create_primitive_shape(bodyComp, transform);
+    }
+
+    JPH::ShapeRefC create_collision_shape(World& world,
+                                          entt::entity entity,
+                                          const PhysicsBodyComponent& bodyComp,
+                                          const TransformComponent& transform)
+    {
+        if (bodyComp.shapeType == PhysicsColliderShapeType::Mesh ||
+            bodyComp.shapeType == PhysicsColliderShapeType::ConvexHull ||
+            bodyComp.shapeType == PhysicsColliderShapeType::StaticCompound ||
+            bodyComp.shapeType == PhysicsColliderShapeType::MutableCompound)
+        {
+            if (auto shape = create_model_shape(world, entity, bodyComp, transform); shape)
+                return shape;
+        }
+
+        return create_primitive_shape(bodyComp, transform);
+    }
+
+    static JPH::EMotionType effective_motion_type(const PhysicsBodyComponent& bodyComp) noexcept
+    {
+        if (bodyComp.shapeType == PhysicsColliderShapeType::StaticCompound)
+            return JPH::EMotionType::Static;
+
+        return to_motion_type(bodyComp.motionType);
+    }
 
     void configure_layers()
     {
@@ -191,7 +531,7 @@ struct PhysicsWorld::Impl
         bodyInterface.DestroyBody(id);
     }
 
-    void recreate_body(PhysicsBodyComponent& bodyComp, const TransformComponent& transform, entt::entity entity)
+    void recreate_body(World& world, PhysicsBodyComponent& bodyComp, const TransformComponent& transform, entt::entity entity)
     {
         const auto key = entity_key(entity);
         if (auto bodyIt = bodies.find(key); bodyIt != bodies.end())
@@ -200,19 +540,26 @@ struct PhysicsWorld::Impl
             bodies.erase(bodyIt);
         }
 
-        const float scaledX = std::max(bodyComp.halfExtents.x * std::max(std::abs(transform.scale.x), 0.0001f), 0.01f);
-        const float scaledY = std::max(bodyComp.halfExtents.y * std::max(std::abs(transform.scale.y), 0.0001f), 0.01f);
-        const float scaledZ = std::max(bodyComp.halfExtents.z * std::max(std::abs(transform.scale.z), 0.0001f), 0.01f);
-        const JPH::Vec3 halfExtents(scaledX, scaledY, scaledZ);
-        JPH::ShapeRefC shape = new JPH::BoxShape(halfExtents);
+        JPH::ShapeRefC shape = create_collision_shape(world, entity, bodyComp, transform);
+        if (!shape)
+            return;
 
-        const JPH::EMotionType motionType = to_motion_type(bodyComp.motionType);
+        const JPH::EMotionType motionType = effective_motion_type(bodyComp);
         JPH::BodyCreationSettings settings(
             shape,
-            JPH::RVec3(transform.position.x, transform.position.y, transform.position.z),
-            JPH::Quat(transform.rotation.x, transform.rotation.y, transform.rotation.z, transform.rotation.w),
+            to_body_position(transform, bodyComp),
+            to_jolt_quat(transform.rotation),
             motionType,
-            to_object_layer(bodyComp.motionType));
+            motionType == JPH::EMotionType::Static ? Layers::NON_MOVING : Layers::MOVING);
+
+        if (bodyComp.shapeType == PhysicsColliderShapeType::Mesh && motionType != JPH::EMotionType::Static)
+        {
+            // Mesh shapes don't provide stable volume-based mass properties for dynamic simulation.
+            // Provide an explicit mass and let Jolt compute inertia from shape density.
+            settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
+            settings.mMassPropertiesOverride.mMass = 1.0f;
+            settings.mEnhancedInternalEdgeRemoval = true;
+        }
 
         settings.mFriction = std::clamp(bodyComp.friction, 0.0f, 1.0f);
         settings.mRestitution = std::clamp(bodyComp.restitution, 0.0f, 1.0f);
@@ -287,20 +634,20 @@ struct PhysicsWorld::Impl
 
             auto bodyIt = bodies.find(entity_key(entity));
             if (bodyIt == bodies.end() || bodyComp.runtimeDirty)
-                recreate_body(bodyComp, transform, entity);
+                recreate_body(world, bodyComp, transform, entity);
 
             bodyIt = bodies.find(entity_key(entity));
             if (bodyIt == bodies.end())
                 continue;
 
-            const JPH::EMotionType motionType = to_motion_type(bodyComp.motionType);
+            const JPH::EMotionType motionType = effective_motion_type(bodyComp);
             if (motionType == JPH::EMotionType::Static || motionType == JPH::EMotionType::Kinematic)
             {
                 JPH::BodyInterface& bodyInterface = physicsSystem.GetBodyInterface();
                 bodyInterface.SetPositionAndRotationWhenChanged(
                     bodyIt->second,
-                    JPH::RVec3(transform.position.x, transform.position.y, transform.position.z),
-                    JPH::Quat(transform.rotation.x, transform.rotation.y, transform.rotation.z, transform.rotation.w),
+                    to_body_position(transform, bodyComp),
+                    to_jolt_quat(transform.rotation),
                     JPH::EActivation::DontActivate);
             }
             else if (!enabled)
@@ -309,8 +656,8 @@ struct PhysicsWorld::Impl
                 JPH::BodyInterface& bodyInterface = physicsSystem.GetBodyInterface();
                 bodyInterface.SetPositionAndRotationWhenChanged(
                     bodyIt->second,
-                    JPH::RVec3(transform.position.x, transform.position.y, transform.position.z),
-                    JPH::Quat(transform.rotation.x, transform.rotation.y, transform.rotation.z, transform.rotation.w),
+                    to_body_position(transform, bodyComp),
+                    to_jolt_quat(transform.rotation),
                     JPH::EActivation::DontActivate);
                 bodyInterface.SetLinearAndAngularVelocity(bodyIt->second, JPH::Vec3::sZero(), JPH::Vec3::sZero());
             }
@@ -399,6 +746,14 @@ bool PhysicsWorld::is_enabled() const noexcept
     return m_impl && m_impl->enabled;
 }
 
+void PhysicsWorld::set_asset_root(const std::string& rootPath)
+{
+    if (!m_impl)
+        return;
+
+    m_impl->assetRoot = rootPath.empty() ? std::filesystem::path{} : std::filesystem::path(rootPath);
+}
+
 void PhysicsWorld::step(World& world, float deltaTime)
 {
     if (!m_impl || !m_impl->initialized)
@@ -442,7 +797,7 @@ void PhysicsWorld::step(World& world, float deltaTime)
     for (entt::entity entity : view)
     {
         auto& bodyComp = view.get<PhysicsBodyComponent>(entity);
-        if (!bodyComp.enabled || bodyComp.motionType != PhysicsBodyMotionType::Dynamic)
+        if (!bodyComp.enabled || m_impl->effective_motion_type(bodyComp) != JPH::EMotionType::Dynamic)
             continue;
 
         auto bodyIt = m_impl->bodies.find(entity_key(entity));
@@ -453,12 +808,8 @@ void PhysicsWorld::step(World& world, float deltaTime)
         const JPH::RVec3 position = bodyInterface.GetPosition(bodyIt->second);
         const JPH::Quat rotation = bodyInterface.GetRotation(bodyIt->second);
 
-        transform.position = {
-            static_cast<float>(position.GetX()),
-            static_cast<float>(position.GetY()),
-            static_cast<float>(position.GetZ()),
-        };
         transform.rotation = {rotation.GetX(), rotation.GetY(), rotation.GetZ(), rotation.GetW()};
+        transform.position = to_entity_position(position, transform.rotation, bodyComp.colliderOffset);
         anyTransformUpdated = true;
     }
 
