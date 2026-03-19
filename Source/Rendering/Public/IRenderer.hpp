@@ -1,6 +1,7 @@
 #pragma once
 #include "../../Core/Public/Expected.hpp"
 #include "Renderable.hpp"
+#include "ShaderCompiler.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -21,7 +22,6 @@ struct MeshBounds
 };
 
 enum class KHR_Settings;
-
 NOC_SUPPRESS_DLL_WARNINGS
 
 /// Abstract renderer interface. No graphics-API types leak through this surface.
@@ -123,6 +123,9 @@ class NOC_EXPORT IRenderer
     /// Set the paths to the GLSL vertex and fragment shader source files.
     /// The renderer will use these for subsequent shader compilations.
     virtual void set_shader_paths(const std::filesystem::path& vertPath, const std::filesystem::path& fragPath) = 0;
+
+    /// Selects whether the renderer may compile shaders at runtime or must rely on precompiled SPIR-V.
+    virtual void set_shader_load_mode(ShaderLoadMode mode) noexcept = 0;
 
     /// Recompile shaders from the current shader source paths.
     /// Rebuilds the graphics pipeline with the newly compiled SPIR-V.

@@ -1,6 +1,7 @@
 #include "../Public/Project.hpp"
 
 #include <ProjectAsset_generated.h>
+#include <Core/Public/RuntimePaths.hpp>
 
 #include <flatbuffers/flatbuffers.h>
 #include <fmt/core.h>
@@ -36,10 +37,12 @@ Result<Project> Project::create_new(std::string name, std::string rootPath)
     std::filesystem::path shadersDir = std::filesystem::path(project.m_rootPath) / "Assets" / "Shaders";
     std::filesystem::create_directories(shadersDir, ec);
 
-    // Copy default shaders from engine's Resources/ directory (next to executable).
+    // Copy default shaders from the runtime's engine content directory.
     for (const auto& shaderName : {"shader.vert", "shader.frag"})
     {
-        std::filesystem::path src = std::filesystem::path("Resources") / shaderName;
+        std::filesystem::path src =
+            RuntimePaths::try_current() ? RuntimePaths::try_current()->resolve_engine_resource(shaderName)
+                                        : std::filesystem::path("Resources") / shaderName;
         std::filesystem::path dst = shadersDir / shaderName;
         std::error_code copyEc;
         std::filesystem::copy_file(src, dst, std::filesystem::copy_options::skip_existing, copyEc);
@@ -52,7 +55,9 @@ Result<Project> Project::create_new(std::string name, std::string rootPath)
     std::filesystem::path scriptsDir = std::filesystem::path(project.m_rootPath) / "Scripts";
     std::filesystem::create_directories(scriptsDir, ec);
 
-    std::filesystem::path sampleSrc = std::filesystem::path("Resources") / "scripts" / "spin.lua";
+    std::filesystem::path sampleSrc =
+        RuntimePaths::try_current() ? RuntimePaths::try_current()->resolve_engine_resource(std::filesystem::path("scripts") / "spin.lua")
+                                    : std::filesystem::path("Resources") / "scripts" / "spin.lua";
     if (std::filesystem::exists(sampleSrc))
     {
         std::error_code copyEc;

@@ -119,11 +119,38 @@ Result<std::vector<std::uint32_t>> ShaderCompiler::compile_or_cache(const std::f
     return spirvResult;
 }
 
+Result<std::vector<std::uint32_t>> ShaderCompiler::load_or_compile(const std::filesystem::path& glslPath, ShaderLoadMode mode)
+{
+    const std::filesystem::path spvPath = get_spv_path(glslPath);
+    switch (mode)
+    {
+    case ShaderLoadMode::PrecompiledOnly:
+        return read_spv(spvPath);
+    case ShaderLoadMode::PreferPrecompiled:
+        if (std::filesystem::exists(spvPath))
+            return read_spv(spvPath);
+        return compile_file(glslPath);
+    case ShaderLoadMode::RuntimeCompileWithCache:
+    default:
+        return compile_or_cache(glslPath, spvPath);
+    }
+}
+
 std::filesystem::path ShaderCompiler::get_spv_path(const std::filesystem::path& glslPath)
 {
     std::filesystem::path result{glslPath};
     result += ".spv"; // e.g. shader.vert -> shader.vert.spv
     return result;
+}
+
+Result<> ShaderCompiler::compile_to_file(const std::filesystem::path& glslPath, const std::filesystem::path& spvPath)
+{
+    auto spirvResult = compile_file(glslPath);
+    if (!spirvResult)
+        return make_error(spirvResult.error());
+
+    std::filesystem::create_directories(spvPath.parent_path());
+    return write_spv(spvPath, spirvResult.value());
 }
 
 //    Private helpers                                                   
@@ -263,4 +290,53 @@ Result<std::vector<std::uint32_t>> ShaderCompiler::compile_compute_with_includes
     resolved.append(source, lastPos, source.size() - lastPos);
 
     return compile(resolved, ShaderStage::Compute, glslPath.filename().string());
+}
+
+Result<std::vector<std::uint32_t>> ShaderCompiler::load_compute_with_includes(
+    const std::filesystem::path& glslPath,
+    const std::vector<std::filesystem::path>& includeDirs,
+    ShaderLoadMode mode)
+{
+    const std::filesystem::path spvPath = get_spv_path(glslPath);
+    switch (mode)
+    {
+    case ShaderLoadMode::PrecompiledOnly:
+        return read_spv(spvPath);
+    case ShaderLoadMode::PreferPrecompiled:
+        if (std::filesystem::exists(spvPath))
+            return read_spv(spvPath);
+        return compile_compute_with_includes(glslPath, includeDirs);
+    case ShaderLoadMode::RuntimeCompileWithCache:
+    default:
+        if (std::filesystem::exists(spvPath) && std::filesystem::exists(glslPath))
+        {
+            auto srcTime = std::filesystem::last_write_time(glslPath);
+            auto spvTime = std::filesystem::last_write_time(spvPath);
+            if (spvTime >= srcTime)
+                return read_spv(spvPath);
+        }
+
+        auto spirvResult = compile_compute_with_includes(glslPath, includeDirs);
+        if (!spirvResult)
+            return spirvResult;
+
+        std::filesystem::create_directories(spvPath.parent_path());
+        auto writeResult = write_spv(spvPath, spirvResult.value());
+        if (!writeResult)
+            fmt::print("Warning: failed to cache compute shader: {}\n", writeResult.error().message);
+        return spirvResult;
+    }
+}
+
+Result<> ShaderCompiler::compile_compute_to_file(
+    const std::filesystem::path& glslPath,
+    const std::filesystem::path& spvPath,
+    const std::vector<std::filesystem::path>& includeDirs)
+{
+    auto spirvResult = compile_compute_with_includes(glslPath, includeDirs);
+    if (!spirvResult)
+        return make_error(spirvResult.error());
+
+    std::filesystem::create_directories(spvPath.parent_path());
+    return write_spv(spvPath, spirvResult.value());
 }

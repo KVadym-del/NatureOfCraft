@@ -5,6 +5,7 @@
 #include "../Public/Vulkan.hpp"
 #include "../../../Assets/Public/MeshData.hpp"
 #include "../../../Assets/Public/TextureData.hpp"
+#include "../../../Core/Public/RuntimePaths.hpp"
 #include "../../Public/Mesh.hpp"
 #include "../../Public/ShaderCompiler.hpp"
 
@@ -28,6 +29,22 @@
 #include "../../../ThirdParty/NIS/NIS_Config.h"
 using namespace DirectX;
 
+Vulkan::Vulkan(GLFWwindow* window) : m_vulkanDevice(window), m_swapchain(m_vulkanDevice), m_pipeline(m_vulkanDevice)
+{
+    if (const RuntimePaths* runtimePaths = RuntimePaths::try_current())
+    {
+        m_nisShaderPath = runtimePaths->resolve_engine_resource(std::filesystem::path("NIS") / "NIS_Main.glsl");
+        m_vertShaderPath = runtimePaths->resolve_engine_resource("shader.vert");
+        m_fragShaderPath = runtimePaths->resolve_engine_resource("shader.frag");
+    }
+    else
+    {
+        m_nisShaderPath = std::filesystem::path("Resources") / "NIS" / "NIS_Main.glsl";
+        m_vertShaderPath = std::filesystem::path("Resources") / "shader.vert";
+        m_fragShaderPath = std::filesystem::path("Resources") / "shader.frag";
+    }
+}
+
 /// Initialization
 
 Result<> Vulkan::initialize() noexcept
@@ -44,16 +61,14 @@ Result<> Vulkan::initialize() noexcept
     if (auto result = create_scene_render_target(); !result)
         return result;
 
-    // Compile shaders from source (or use cached .spv)
+    // Load shaders according to the selected runtime/shipping policy.
     {
-        auto vertSpvPath = ShaderCompiler::get_spv_path(m_vertShaderPath);
-        auto vertResult = ShaderCompiler::compile_or_cache(m_vertShaderPath, vertSpvPath);
+        auto vertResult = ShaderCompiler::load_or_compile(m_vertShaderPath, m_shaderLoadMode);
         if (!vertResult)
             return make_error(vertResult.error());
         m_vertSpirv = std::move(vertResult.value());
 
-        auto fragSpvPath = ShaderCompiler::get_spv_path(m_fragShaderPath);
-        auto fragResult = ShaderCompiler::compile_or_cache(m_fragShaderPath, fragSpvPath);
+        auto fragResult = ShaderCompiler::load_or_compile(m_fragShaderPath, m_shaderLoadMode);
         if (!fragResult)
             return make_error(fragResult.error());
         m_fragSpirv = std::move(fragResult.value());
@@ -846,7 +861,8 @@ Result<> Vulkan::record_command_buffer(VkCommandBuffer commandBuffer, std::uint3
         );
     }
 
-    // UI render pass (swapchain)
+    // UI render pass (swapchain) for editor, or direct blit for standalone Game.
+    if (get_ui_render_callback())
     {
         VkExtent2D swapExtent = m_swapchain.get_extent();
 
@@ -863,7 +879,6 @@ Result<> Vulkan::record_command_buffer(VkCommandBuffer commandBuffer, std::uint3
 
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-        // Set viewport/scissor to window resolution for UI
         VkViewport viewport{};
         viewport.x = 0.0f;
         viewport.y = 0.0f;
@@ -878,12 +893,102 @@ Result<> Vulkan::record_command_buffer(VkCommandBuffer commandBuffer, std::uint3
         scissor.extent = swapExtent;
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-        if (get_ui_render_callback())
-        {
-            get_ui_render_callback()(commandBuffer);
-        }
-
+        get_ui_render_callback()(commandBuffer);
         vkCmdEndRenderPass(commandBuffer);
+    }
+    else
+    {
+        const bool useNisOutput = m_nisEnabled && m_nisOutputImage != nullptr;
+        VkImage sourceImage = useNisOutput ? m_nisOutputImage : m_sceneColorImage;
+        const std::uint32_t sourceWidth = useNisOutput ? m_swapchain.get_extent().width : m_sceneRenderWidth;
+        const std::uint32_t sourceHeight = useNisOutput ? m_swapchain.get_extent().height : m_sceneRenderHeight;
+        VkImage destinationImage = m_swapchain.get_images()[imageIndex];
+        VkExtent2D swapExtent = m_swapchain.get_extent();
+
+        VkImageMemoryBarrier sourceToTransfer{};
+        sourceToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        sourceToTransfer.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        sourceToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        sourceToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        sourceToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        sourceToTransfer.image = sourceImage;
+        sourceToTransfer.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        sourceToTransfer.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        sourceToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+        VkImageMemoryBarrier destinationToTransfer{};
+        destinationToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        destinationToTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        destinationToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        destinationToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        destinationToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        destinationToTransfer.image = destinationImage;
+        destinationToTransfer.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        destinationToTransfer.srcAccessMask = 0;
+        destinationToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+        std::array<VkImageMemoryBarrier, 2> preBlitBarriers{sourceToTransfer, destinationToTransfer};
+        vkCmdPipelineBarrier(commandBuffer,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0,
+                             0,
+                             nullptr,
+                             0,
+                             nullptr,
+                             static_cast<std::uint32_t>(preBlitBarriers.size()),
+                             preBlitBarriers.data());
+
+        VkImageBlit blit{};
+        blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit.srcOffsets[0] = {0, 0, 0};
+        blit.srcOffsets[1] = {static_cast<std::int32_t>(sourceWidth), static_cast<std::int32_t>(sourceHeight), 1};
+        blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit.dstOffsets[0] = {0, 0, 0};
+        blit.dstOffsets[1] = {static_cast<std::int32_t>(swapExtent.width), static_cast<std::int32_t>(swapExtent.height), 1};
+
+        vkCmdBlitImage(commandBuffer,
+                       sourceImage,
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       destinationImage,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       1,
+                       &blit,
+                       VK_FILTER_LINEAR);
+
+        VkImageMemoryBarrier sourceToSample{};
+        sourceToSample.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        sourceToSample.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        sourceToSample.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        sourceToSample.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        sourceToSample.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        sourceToSample.image = sourceImage;
+        sourceToSample.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        sourceToSample.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        sourceToSample.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        VkImageMemoryBarrier destinationToPresent{};
+        destinationToPresent.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        destinationToPresent.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        destinationToPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        destinationToPresent.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        destinationToPresent.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        destinationToPresent.image = destinationImage;
+        destinationToPresent.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        destinationToPresent.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        destinationToPresent.dstAccessMask = 0;
+
+        std::array<VkImageMemoryBarrier, 2> postBlitBarriers{sourceToSample, destinationToPresent};
+        vkCmdPipelineBarrier(commandBuffer,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                             0,
+                             0,
+                             nullptr,
+                             0,
+                             nullptr,
+                             static_cast<std::uint32_t>(postBlitBarriers.size()),
+                             postBlitBarriers.data());
     }
 
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
@@ -1941,11 +2046,8 @@ Result<> Vulkan::create_nis_resources()
     // Compile NIS compute shader (if not already compiled)
     if (m_nisComputeSpirv.empty())
     {
-        std::filesystem::path nisDir = std::filesystem::path("Resources/NIS");
-        auto compResult = ShaderCompiler::compile_compute_with_includes(
-            m_nisShaderPath,
-            {nisDir}
-        );
+        auto compResult = ShaderCompiler::load_compute_with_includes(m_nisShaderPath, {m_nisShaderPath.parent_path()},
+                                                                     m_shaderLoadMode);
         if (!compResult)
             return make_error(compResult.error());
         m_nisComputeSpirv = std::move(compResult.value());
@@ -2769,11 +2871,11 @@ Result<> Vulkan::recompile_shaders()
     VkDevice device = m_vulkanDevice.get_device();
     vkDeviceWaitIdle(device);
 
-    auto vertResult = ShaderCompiler::compile_file(m_vertShaderPath);
+    auto vertResult = ShaderCompiler::load_or_compile(m_vertShaderPath, m_shaderLoadMode);
     if (!vertResult)
         return make_error(vertResult.error());
 
-    auto fragResult = ShaderCompiler::compile_file(m_fragShaderPath);
+    auto fragResult = ShaderCompiler::load_or_compile(m_fragShaderPath, m_shaderLoadMode);
     if (!fragResult)
         return make_error(fragResult.error());
 

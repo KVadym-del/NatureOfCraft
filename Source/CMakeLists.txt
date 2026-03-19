@@ -21,7 +21,8 @@ find_program(FLATC_EXECUTABLE flatc
 )
 
 set(FBS_SCHEMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Assets/Schemas")
-set(FBS_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Assets/Generated")
+set(FBS_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/Assets/Generated")
+file(MAKE_DIRECTORY "${FBS_GENERATED_DIR}")
 
 file(GLOB FBS_SCHEMAS "${FBS_SCHEMA_DIR}/*.fbs")
 
@@ -63,6 +64,7 @@ add_dependencies(Source FlatBufferSchemas)
 
 target_include_directories(Source PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_include_directories(Source PUBLIC "${FBS_GENERATED_DIR}")
+target_include_directories(Source PUBLIC "${CMAKE_CURRENT_BINARY_DIR}")
 
 target_include_directories(Source PRIVATE ${SOL2_INCLUDE_DIRS})
 target_include_directories(Source PRIVATE ${Stb_INCLUDE_DIR})

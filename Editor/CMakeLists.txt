@@ -85,32 +85,3 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Resources/scripts")
     )
 endif()
 
-#    Self-contained release bundle                                       
-# Usage: cmake --build <build-dir> --target Bundle
-# Output: <build-dir>/bundle/NatureOfCraft/
-
-set(BUNDLE_DIR "${CMAKE_BINARY_DIR}/bundle/NatureOfCraft")
-
-add_custom_target(Bundle
-    DEPENDS Editor
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${BUNDLE_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${BUNDLE_DIR}/Resources"
-    # Executable
-    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:Editor>" "${BUNDLE_DIR}/"
-    # Runtime DLLs (Source.dll + vcpkg shared libs: fmt, glfw3, etc.)
-    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_RUNTIME_DLLS:Editor>" "${BUNDLE_DIR}/"
-    # Vulkan loader — FindVulkan creates an import-lib target so
-    # TARGET_RUNTIME_DLLS cannot resolve the DLL; copy it explicitly.
-    COMMAND ${CMAKE_COMMAND} -E copy
-        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin/vulkan-1.dll"
-        "${BUNDLE_DIR}/"
-    # LuaJIT runtime — no CMake config in vcpkg, same issue as Vulkan loader.
-    COMMAND ${CMAKE_COMMAND} -E copy
-        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin/lua51.dll"
-        "${BUNDLE_DIR}/"
-    # Shader sources + sample assets
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/Resources" "${BUNDLE_DIR}/Resources"
-    COMMAND_EXPAND_LISTS
-    COMMENT "Bundling self-contained release → ${BUNDLE_DIR}"
-)

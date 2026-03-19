@@ -124,7 +124,7 @@ struct WorldMatrixCache
 /// and/or on_destroy(entity) functions.
 struct ScriptComponent
 {
-    std::string scriptPath;  // project-relative path, e.g. "Assets/Scripts/spin.lua"
+    std::string scriptPath;  // project-relative path, e.g. "Scripts/spin.lua"
     bool initialized{false}; // has on_start() been called?
 };
 

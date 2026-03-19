@@ -5,8 +5,9 @@
 #include <flatbuffers/flatbuffers.h>
 #include <fmt/core.h>
 
-#include <fstream>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <set>
 
 namespace fb = flatbuffers;
@@ -284,6 +285,19 @@ Result<> LevelSerializer::save_to_file(const World& world, const std::string& le
     auto bufferResult = serialize(world, levelName);
     if (!bufferResult)
         return make_error(bufferResult.error());
+
+    const std::filesystem::path outputPath(filePath);
+    if (const std::filesystem::path parentPath = outputPath.parent_path(); !parentPath.empty())
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(parentPath, ec);
+        if (ec)
+        {
+            return make_error(fmt::format("Failed to create directory for level file '{}': {}",
+                                          parentPath.string(), ec.message()),
+                              ErrorCode::AssetCacheWriteFailed);
+        }
+    }
 
     std::ofstream file(filePath, std::ios::binary);
     if (!file)

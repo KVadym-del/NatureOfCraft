@@ -36,8 +36,7 @@ NOC_SUPPRESS_DLL_WARNINGS
 class NOC_EXPORT Vulkan : public IRenderer
 {
   public:
-    inline Vulkan(GLFWwindow* window) : m_vulkanDevice(window), m_swapchain(m_vulkanDevice), m_pipeline(m_vulkanDevice)
-    {}
+    Vulkan(GLFWwindow* window);
     inline ~Vulkan()
     {
         this->cleanup();
@@ -273,6 +272,10 @@ class NOC_EXPORT Vulkan : public IRenderer
 
     // --- Shader management (IRenderer overrides) ---
     void set_shader_paths(const std::filesystem::path& vertPath, const std::filesystem::path& fragPath) override;
+    void set_shader_load_mode(ShaderLoadMode mode) noexcept override
+    {
+        m_shaderLoadMode = mode;
+    }
     Result<> recompile_shaders() override;
 
   private:
@@ -447,11 +450,12 @@ class NOC_EXPORT Vulkan : public IRenderer
     VkDeviceMemory m_nisConfigMemory{};
     VkSampler m_nisLinearSampler{};
     std::vector<std::uint32_t> m_nisComputeSpirv{};
-    std::filesystem::path m_nisShaderPath{"Resources/NIS/NIS_Main.glsl"};
+    std::filesystem::path m_nisShaderPath{};
 
     // --- Shader paths and cached SPIR-V ---
-    std::filesystem::path m_vertShaderPath{"Resources/shader.vert"};
-    std::filesystem::path m_fragShaderPath{"Resources/shader.frag"};
+    ShaderLoadMode m_shaderLoadMode{ShaderLoadMode::RuntimeCompileWithCache};
+    std::filesystem::path m_vertShaderPath{};
+    std::filesystem::path m_fragShaderPath{};
     std::vector<std::uint32_t> m_vertSpirv{};
     std::vector<std::uint32_t> m_fragSpirv{};
 };

@@ -5,11 +5,13 @@
 #include <Assets/Public/ModelData.hpp>
 #include <Assets/Generated/MaterialAsset_generated.h>
 #include <Camera/Public/Camera.hpp>
+#include <Core/Public/RuntimePaths.hpp>
 #include <ECS/Public/Components.hpp>
 #include <Level/Public/Level.hpp>
 #include <Level/Public/Project.hpp>
 #include <Physics/Public/PhysicsWorld.hpp>
 #include <Rendering/BackEnds/Public/Vulkan.hpp>
+#include <Runtime/Public/ProjectPipeline.hpp>
 #include <Scripting/Public/ScriptEngine.hpp>
 #include <Window/Public/Window.hpp>
 #include <imgui.h>
@@ -556,33 +558,6 @@ static void clear_entity_visual_effects(World& world, entt::entity entity)
     world.mark_renderables_dirty();
 }
 
-//  Script scanner 
-// Scans for .lua files in the project directory.
-// Returns project-relative paths (e.g. "Scripts/spin.lua") suitable for ScriptComponent.
-
-static std::vector<std::string> scan_available_scripts(const Project* project)
-{
-    std::set<std::string> scripts;
-
-    if (!project)
-        return {};
-
-    std::filesystem::path root(project->root_path());
-    if (!std::filesystem::exists(root))
-        return {};
-
-    std::error_code ec;
-    for (const auto& entry :
-         std::filesystem::recursive_directory_iterator(root, std::filesystem::directory_options::skip_permission_denied,
-                                                       ec))
-    {
-        if (entry.is_regular_file() && entry.path().extension() == ".lua")
-            scripts.insert(std::filesystem::relative(entry.path(), root).generic_string());
-    }
-
-    return {scripts.begin(), scripts.end()};
-}
-
 struct ProjectAssetEntry
 {
     std::string relativePath;
@@ -742,81 +717,6 @@ bool save_material_to_file(const MaterialData& mat, const std::string& name,
     if (!ofs) return false;
     ofs.write(reinterpret_cast<const char*>(fbb.GetBufferPointer()), fbb.GetSize());
     return ofs.good();
-}
-
-bool load_material_from_file(const std::filesystem::path& filePath,
-                             std::string& outName, MaterialData& outData,
-                             const Project* project)
-{
-    namespace fb = NatureOfCraft::Assets;
-
-    std::ifstream ifs(filePath, std::ios::binary | std::ios::ate);
-    if (!ifs) return false;
-    auto size = ifs.tellg();
-    ifs.seekg(0);
-    std::vector<uint8_t> buf(static_cast<size_t>(size));
-    ifs.read(reinterpret_cast<char*>(buf.data()), size);
-    if (!ifs) return false;
-
-    flatbuffers::Verifier verifier(buf.data(), buf.size());
-    if (!fb::VerifyMaterialAssetBuffer(verifier)) return false;
-
-    auto asset = fb::GetMaterialAsset(buf.data());
-    if (!asset) return false;
-
-    outName = asset->name() ? asset->name()->str() : filePath.stem().string();
-    if (auto* c = asset->albedo_color())
-        outData.albedoColor = {c->r(), c->g(), c->b(), c->a()};
-    outData.roughness = asset->roughness();
-    outData.metallic = asset->metallic();
-
-    // Extract embedded textures to project's Assets/Textures/ directory
-    std::filesystem::path texDir;
-    if (project)
-        texDir = std::filesystem::path(project->root_path()) / project->asset_directory() / "Textures";
-
-    auto extractTexture = [&](const ::flatbuffers::String* pathField,
-                              const ::flatbuffers::Vector<uint8_t>* dataField,
-                              std::filesystem::path& outPath) {
-        if (!pathField || pathField->size() == 0) return;
-        std::string filename = pathField->str();
-        outPath = std::filesystem::path(project->asset_directory()) / "Textures" / filename;
-
-        // If embedded data exists, write it to disk
-        if (dataField && dataField->size() > 0 && !texDir.empty())
-        {
-            auto destFile = texDir / filename;
-            if (!std::filesystem::exists(destFile))
-            {
-                std::filesystem::create_directories(texDir);
-                std::ofstream ofs(destFile, std::ios::binary);
-                if (ofs)
-                    ofs.write(reinterpret_cast<const char*>(dataField->data()),
-                              static_cast<std::streamsize>(dataField->size()));
-            }
-        }
-    };
-
-    extractTexture(asset->albedo_texture_path(),    asset->albedo_texture_data(),    outData.albedoTexturePath);
-    extractTexture(asset->normal_texture_path(),    asset->normal_texture_data(),    outData.normalTexturePath);
-    extractTexture(asset->roughness_texture_path(), asset->roughness_texture_data(), outData.roughnessTexturePath);
-    extractTexture(asset->metallic_texture_path(),  asset->metallic_texture_data(),  outData.metallicTexturePath);
-    extractTexture(asset->ao_texture_path(),        asset->ao_texture_data(),        outData.aoTexturePath);
-    return true;
-}
-
-std::vector<std::filesystem::path> scan_material_files(const Project* project)
-{
-    std::vector<std::filesystem::path> result;
-    if (!project) return result;
-    auto root = std::filesystem::path(project->root_path());
-    if (!std::filesystem::exists(root)) return result;
-    for (auto& entry : std::filesystem::recursive_directory_iterator(root))
-    {
-        if (entry.is_regular_file() && entry.path().extension() == ".noc_material")
-            result.push_back(entry.path());
-    }
-    return result;
 }
 
 //  Import model helper 
@@ -1341,8 +1241,16 @@ static void draw_status_message(StatusMessage& status, float deltaTime)
 
 //  Main 
 
-int main()
+int main(int argc, char** argv)
 {
+    if (auto runtimePathsResult =
+            RuntimePaths::initialize_current_process("NatureOfCraft", argc > 0 ? std::filesystem::path(argv[0]) : std::filesystem::path{});
+        !runtimePathsResult)
+    {
+        fmt::print("Failed to initialize runtime paths: {}\n", runtimePathsResult.error().message);
+        return -1;
+    }
+
     Window window{WIDTH, HEIGHT, "NatureOfCraft"};
 
     if (auto code = get_error_code(window.init()); code != 0)
@@ -1450,24 +1358,13 @@ int main()
     //  State transition helpers 
 
     auto clear_runtime_scene_state = [&]() {
-        renderer.wait_idle();
-        renderer.set_renderables({});
-        physicsWorld.clear();
-
-        if (level)
-            scriptEngine.on_world_destroyed(level->world());
-
-        if (auto clearResult = renderer.clear_scene_content(); !clearResult)
+        if (auto clearResult = clear_runtime_scene(renderer, assetManager, scriptEngine, physicsWorld, level.get());
+            !clearResult)
         {
             statusMessage = {fmt::format("Warning: failed to clear renderer scene content: {}",
                                          clearResult.error().message),
                              true, 5.0f};
         }
-
-        assetManager.clear_materials();
-        assetManager.clear_textures();
-        assetManager.clear_models();
-        assetManager.clear_meshes();
     };
 
     auto refresh_viewport_texture = [&]() {
@@ -1533,60 +1430,25 @@ int main()
         graphicsApplyRequested = false;
         physicsSimulationEnabled = false;
         physicsWorld.set_enabled(false);
-        physicsWorld.set_asset_root(project ? project->root_path() : std::string{});
         requestDefaultDockLayout = true;
 
         World& world = level->world();
-
-        // Configure script engine for this project's script directory
-        renderer.set_shader_paths("Resources/shader.vert", "Resources/shader.frag");
-
-        if (project)
+        RuntimeLoadOptions loadOptions;
+        loadOptions.seedProjectDefaults = true;
+        loadOptions.allowEmbeddedMaterialTextureExtraction = true;
+        loadOptions.requireCookedModels = false;
+        loadOptions.requireGlowShaders = true;
+        if (auto loadResult = prepare_loaded_level(assetManager, renderer, scriptEngine, physicsWorld, *level, project.get(),
+                                                   loadOptions);
+            loadResult)
         {
-            scriptEngine.set_script_root(project->root_path());
-
-            std::error_code ec;
-            const std::filesystem::path scriptsDir = std::filesystem::path(project->get_absolute_path("Scripts"));
-            std::filesystem::create_directories(scriptsDir, ec);
-
-            const std::array<std::string, 2> sampleScripts = {"pulse_glow.lua", "outline_xray.lua"};
-            for (const auto& scriptName : sampleScripts)
-            {
-                const std::filesystem::path sourcePath = std::filesystem::path("Resources") / "scripts" / scriptName;
-                const std::filesystem::path targetPath = scriptsDir / scriptName;
-                if (!std::filesystem::exists(sourcePath))
-                    continue;
-                std::filesystem::copy_file(sourcePath, targetPath, std::filesystem::copy_options::overwrite_existing,
-                                           ec);
-            }
+            for (const auto& warning : loadResult->warnings)
+                statusMessage = {warning, true, 6.0f};
         }
-
-        // Point the renderer at the project's shader sources (if available)
-        if (project)
+        else
         {
-            std::filesystem::path vertShader = project->get_absolute_path("Assets/Shaders/shader.vert");
-            std::filesystem::path fragShader = project->get_absolute_path("Assets/Shaders/shader.frag");
-            if (std::filesystem::exists(vertShader) && std::filesystem::exists(fragShader))
-            {
-                const bool projectSupportsGlow = file_contains(vertShader, "inGlow") && file_contains(fragShader, "fragGlow");
-                if (projectSupportsGlow)
-                {
-                    renderer.set_shader_paths(vertShader, fragShader);
-                }
-                else
-                {
-                    statusMessage = {
-                        "Project shaders are missing glow support. Using default editor shaders for this session.",
-                        true,
-                        6.0f,
-                    };
-                }
-            }
+            statusMessage = {loadResult.error().message, true, 6.0f};
         }
-
-        // Re-import all referenced models so entities have valid GPU indices
-        renderer.wait_idle();
-        reload_level_assets(assetManager, renderer, world, statusMessage, project.get());
 
         // Auto-load saved materials and assign to meshes by name
         {
@@ -1595,7 +1457,7 @@ int main()
             {
                 std::string matName;
                 MaterialData matData;
-                if (!load_material_from_file(mf, matName, matData, project.get())) continue;
+                if (!load_material_from_file(mf, matName, matData, project.get(), true)) continue;
 
                 // Skip if already exists
                 bool exists = false;
@@ -1609,61 +1471,20 @@ int main()
                 editorMaterials.push_back(std::move(newMat));
             }
 
-            // Upload materials that are assigned to meshes (lazy loading)
+            // Reconstruct GPU indices from the material assignments prepared by the shared runtime loader.
             auto meshView = world.registry().view<MeshComponent>();
             for (auto& em : editorMaterials)
             {
-                if (em.gpuIndex >= 0) continue; // already uploaded
-
-                // Check if any mesh references this material by name
-                bool isReferenced = false;
                 for (auto entity : meshView)
                 {
                     const auto& mc = meshView.get<MeshComponent>(entity);
-                    if (mc.materialName == em.name) { isReferenced = true; break; }
-                }
-                if (!isReferenced) continue; // lazy: don't upload unused materials
-
-                // Upload textures and material to GPU
-                auto uploadTex = [&](const std::filesystem::path& relPath) -> std::uint32_t {
-                    if (relPath.empty()) return 0;
-                    std::filesystem::path absPath = relPath;
-                    if (relPath.is_relative())
-                        absPath = std::filesystem::path(project->root_path()) / relPath;
-                    if (!std::filesystem::exists(absPath)) return 0;
-                    auto texHandle = assetManager.load_texture(absPath);
-                    if (!texHandle) return 0;
-                    auto texResult = renderer.upload_texture(*texHandle);
-                    if (!texResult) return 0;
-                    return texResult.value();
-                };
-
-                std::uint32_t albedoIdx    = uploadTex(em.data.albedoTexturePath);
-                std::uint32_t normalIdx    = uploadTex(em.data.normalTexturePath);
-                std::uint32_t roughnessIdx = uploadTex(em.data.roughnessTexturePath);
-                std::uint32_t metallicIdx  = uploadTex(em.data.metallicTexturePath);
-                std::uint32_t aoIdx        = uploadTex(em.data.aoTexturePath);
-
-                auto matResult = renderer.upload_material(albedoIdx, normalIdx, roughnessIdx, metallicIdx, aoIdx);
-                if (matResult)
-                    em.gpuIndex = static_cast<std::int32_t>(matResult.value());
-            }
-
-            // Resolve material names to GPU indices on all mesh entities
-            for (auto entity : meshView)
-            {
-                auto& mc = meshView.get<MeshComponent>(entity);
-                if (mc.materialName.empty()) continue;
-                for (const auto& em : editorMaterials)
-                {
-                    if (em.name == mc.materialName && em.gpuIndex >= 0)
+                    if (mc.materialName == em.name && mc.materialIndex >= 0)
                     {
-                        mc.materialIndex = em.gpuIndex;
+                        em.gpuIndex = mc.materialIndex;
                         break;
                     }
                 }
             }
-            world.mark_renderables_dirty();
         }
 
         entt::entity camEntity = world.get_active_camera();
@@ -2982,7 +2803,7 @@ int main()
                                 // Skip if already loaded by name
                                 std::string checkName;
                                 MaterialData checkData;
-                                if (!load_material_from_file(mf, checkName, checkData, project.get())) continue;
+                                if (!load_material_from_file(mf, checkName, checkData, project.get(), true)) continue;
 
                                 bool alreadyExists = false;
                                 for (const auto& em : editorMaterials)
